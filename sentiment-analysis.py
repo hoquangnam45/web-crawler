@@ -1,0 +1,1 @@
+# NOTE: Try to guess what the content of the text is about, could be a kind of filter, but right now I'm not interested in implement this
