@@ -9,7 +9,7 @@ from time import sleep
 
 from cio import read
 from data.comment import Comment
-from init import initDriver
+from driver import initDriver
 
 FACEBOOK_URL = "www.facebook.com"
 GRAPHS_FACEBOOK_URL = "graph." + FACEBOOK_URL

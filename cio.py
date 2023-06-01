@@ -16,3 +16,6 @@ def appendFile(fileName: str, contents: list[str]):
     with open(fileName, 'a') as f1:
         for content in contents:
             f1.write(content + os.linesep)
+
+def write(obj: dict[str], outputFile: str):
+    

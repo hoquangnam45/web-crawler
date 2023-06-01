@@ -3,8 +3,15 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.webdriver import WebDriver
 import os
 
+INSTANCE: WebDriver | None = None
+
+def getWebDriver() -> WebDriver:
+    global INSTANCE
+    if INSTANCE is None:
+        INSTANCE = initDriver()
+    return INSTANCE
+
 def initDriver() -> WebDriver:
-    CHROMEDRIVER_PATH = '/usr/bin/chromedriver'
     WINDOW_SIZE = "1000,2000"
     chrome_options = Options()
     #chrome_options.add_argument("--headless")
@@ -34,7 +41,5 @@ def initDriver() -> WebDriver:
     chrome_options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
     chrome_options.add_argument('disable-infobars')
 
-    driver = webdriver.Chrome(executable_path=CHROMEDRIVER_PATH,
-                              options=chrome_options
-                              )
+    driver = webdriver.Chrome(options=chrome_options)
     return driver
