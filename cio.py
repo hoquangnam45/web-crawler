@@ -1,3 +1,4 @@
+import logging
 import os
 
 def read(fileName: str) -> list[str]:
@@ -9,10 +10,13 @@ def read(fileName: str) -> list[str]:
             line = line[1:len(line) - 3]
             data.append(line)
         except Exception as e:
-            print(e)
+            logging.error(e)
     return data
 
 def appendFile(fileName: str, contents: list[str]):
     with open(fileName, 'a') as f1:
         for content in contents:
             f1.write(content + os.linesep)
+
+def write(obj: dict[str], outputFile: str):
+    

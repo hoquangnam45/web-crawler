@@ -1,13 +1,27 @@
+import datetime
+from time import sleep
+import time
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.webdriver import WebDriver
 import os
+import constants
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+
+INSTANCE: WebDriver | None = None
+    
+def getWebDriver() -> WebDriver:
+    global INSTANCE
+    if INSTANCE is None:
+        INSTANCE = initDriver()
+    return INSTANCE
 
 def initDriver() -> WebDriver:
-    CHROMEDRIVER_PATH = '/usr/bin/chromedriver'
     WINDOW_SIZE = "1000,2000"
     chrome_options = Options()
-    #chrome_options.add_argument("--headless")
+    # chrome_options.add_argument("--headless")
     chrome_options.add_argument("--window-size=%s" % WINDOW_SIZE)
     chrome_options.add_argument('--no-sandbox')
     chrome_options.add_argument('disable-infobars')
@@ -26,6 +40,8 @@ def initDriver() -> WebDriver:
     chrome_options.add_argument("--ignore-certificate-errors")
     chrome_options.add_argument("--disable-blink-features=AutomationControllered")
     chrome_options.add_experimental_option('useAutomationExtension', False)
+    chrome_options.add_argument("--user-data-dir=" + constants.USER_DATA_DIR)
+    chrome_options.add_argument("--profile-directory=" + constants.USER_PROFILE)
     prefs = {"profile.default_content_setting_values.notifications": 2}
     chrome_options.add_experimental_option("prefs", prefs)
     chrome_options.add_argument("--start-maximized")  # open Browser in maximized mode
@@ -33,8 +49,7 @@ def initDriver() -> WebDriver:
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
     chrome_options.add_argument('disable-infobars')
-
-    driver = webdriver.Chrome(executable_path=CHROMEDRIVER_PATH,
-                              options=chrome_options
-                              )
+    # chrome_options.add_argument("user-agent=" + constants.USER_AGENT)
+    driver = webdriver.Chrome(options=chrome_options)
+    
     return driver

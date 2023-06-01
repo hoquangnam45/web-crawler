@@ -1,3 +1,9 @@
 .vscode
 __pycache__
 outputs
+
+# Default output for crawled post
+output
+
+# Vs code extensions for local history
+.history

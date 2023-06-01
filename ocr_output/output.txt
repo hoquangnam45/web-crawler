@@ -1,1 +1,0 @@
-ocr_input/miai.png:'Mi AI\nHọc AI nhé\n'
