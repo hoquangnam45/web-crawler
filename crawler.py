@@ -8,8 +8,11 @@ import os
 from time import sleep
 
 from cio import read
+from data.comment import Comment
 from init import initDriver
 
+FACEBOOK_URL = "www.facebook.com"
+GRAPHS_FACEBOOK_URL = "graph." + FACEBOOK_URL
 
 def checkLiveClone(driver: WebDriver) -> bool:
     try:
@@ -141,6 +144,13 @@ def getnumOfPostFanpage(allPosts: list[str], driver: WebDriver, pageId: str, amo
         newFoundPostIds = getPostIds(allPosts, driver)
         writeFileTxt(filePath, newFoundPostIds)
         allPosts.extend(newFoundPostIds)
+        
+def crawlPost(groupIds: list[str]) -> list[str]:
+
+  
+def getComments(postId: str) -> list[Comment]:
+    driver.get("https://facebook.com/")
+    
 
 # NOTE: How do I plant to do this: read the seed to get some starting points -> follow the links + filter until enough data has been crawled
 def main(cookie: str, driver: WebDriver): 
@@ -157,6 +167,9 @@ def main(cookie: str, driver: WebDriver):
     # Crawl posts based on keywords
 
     # Crawl posts based on seeds
+    for group in seedGroups:
+        
+    
     # for group in seedGroups:
 
 

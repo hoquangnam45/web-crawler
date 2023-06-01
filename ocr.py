@@ -3,9 +3,8 @@ import imghdr
 from PIL import Image
 import pytesseract
 
-ALLOWED_FILE_TYPES = ["jpg", "png"]
-
 def extractText(filePath: str) -> str | None:
+    ALLOWED_FILE_TYPES = ["jpg", "png"]
     fileType = imghdr.what(filePath)
     if (fileType in ALLOWED_FILE_TYPES):
         img = Image.open(filePath)
