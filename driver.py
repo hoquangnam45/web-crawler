@@ -1,10 +1,17 @@
+import datetime
+from time import sleep
+import time
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.webdriver import WebDriver
 import os
+import constants
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
 
 INSTANCE: WebDriver | None = None
-
+    
 def getWebDriver() -> WebDriver:
     global INSTANCE
     if INSTANCE is None:
@@ -33,6 +40,8 @@ def initDriver() -> WebDriver:
     chrome_options.add_argument("--ignore-certificate-errors")
     chrome_options.add_argument("--disable-blink-features=AutomationControllered")
     chrome_options.add_experimental_option('useAutomationExtension', False)
+    chrome_options.add_argument("--user-data-dir=/home/ttl/Documents/SeleniumUserDataDir")
+    chrome_options.add_argument("--profile-directory=Default")
     prefs = {"profile.default_content_setting_values.notifications": 2}
     chrome_options.add_experimental_option("prefs", prefs)
     chrome_options.add_argument("--start-maximized")  # open Browser in maximized mode
@@ -42,4 +51,5 @@ def initDriver() -> WebDriver:
     chrome_options.add_argument('disable-infobars')
 
     driver = webdriver.Chrome(options=chrome_options)
+    
     return driver

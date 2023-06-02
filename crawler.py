@@ -14,6 +14,7 @@ from driver import initDriver
 FACEBOOK_URL = "www.facebook.com"
 GRAPHS_FACEBOOK_URL = "graph." + FACEBOOK_URL
 
+
 def checkLiveClone(driver: WebDriver) -> bool:
     try:
         driver.get("https://mbasic.facebook.com/")
@@ -52,6 +53,7 @@ def convertToCookie(cookie: str) -> str | None:
             return conv
     except:
         print("Error Convert Cookie")
+
 
 
 def checkCookieLiveness(driver: WebDriver, cookie: str) -> bool:
