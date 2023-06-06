@@ -49,30 +49,34 @@ class Post:
             for postElement in postElements:
                 ariaDescribedBy = Post.get_attribute(postElement, "aria-describedby")
                 ariaDescribedByTokens = ariaDescribedBy.split(" ")
+                ariaLabeledBy = Post.get_attribute(postElement, "aria-labelledby")
+                
+                postUserId = Post.get_attribute(Post.find_element_by_xpath(postElement, "//*[contains(@id, '" + ariaLabeledBy + "')]//a"), "href")
                 postStatusId = ariaDescribedBy[0]
                 postContentId = ariaDescribedByTokens[1]
                 postVisualId = ariaDescribedByTokens[2]
-                postUrl = Post.get_attribute(Post.find_element_by_tag_name(Post.find_element_by_id(postElement, postStatusId), "a"), "href")
-                postContent = Post.find_element_by_xpath(postElement, "//div[contains(@id, '" + postContentId + "')]")
-                postTimestamp: timestamp
-                post = Post(postUrl, pageId, None, [], [], )
-                posts.append(post)
-                # try:
-                    # Expand read morePage
+                postUrl = Post.get_attribute(Post.find_element_by_xpath(postElement, "//*[contains(@id, '" + postStatusId + "')]//a"), "href")
+                postContent = Post.find_element_by_xpath(postElement, "//*[contains(@id, '" + postContentId + "')]")
+                postTimestamp: datetime = datetime(0, 0, 0, 0)
                 
+                try:
+                    # Expand read morePage
+                    Post.find_element_by_xpath(postContent, "//*[contains(@role, 'button')]").click()
+                    postContent = Post.find_element_by_xpath(postElement, "//div[contains(@id, '" + postContentId + "')]")
+                except:
+                    # Don't have read more
+                    pass
+                
+                # TODO: Get images,  get comments
                 # try:
                 #     postImage = Page.get_attribute(Page.find_element_by_id(postElement, ariaDescribedByTokens[2]))
                 # except:
                 #     # noop
                 #     # Don't have image
                 
-            
-            postData = [postElement.text for postElement in postElements]
-            id: str = ""
-            linkedPageIds: list[str] = []
-            linkedGroupIds: list[str] = []
-            page = Page(id, linkedPageIds, linkedGroupIds)
-            return page
+                post = Post(postUrl, pageId, None, postContent.text, [], [], postTimestamp, postUserId)
+                posts.append(post)
+            return posts
         except Exception as e:
             print(e)
             return None
@@ -99,7 +103,7 @@ class Post:
         
 # NOTE: For testing-purposes only
 def main():
-    page = Page.getPage("fifaworldcup")
+    posts = Post.getPage("fifaworldcup")
 
 if __name__ == "__main__":
     main()
