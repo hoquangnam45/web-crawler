@@ -63,7 +63,7 @@ class Optional(Generic[T]):
         if self.val is None:
             return Optional(None)
         return Optional(fn(self.val))
-
+    
     def peek(self, fn: typing.Callable[[T], None]) -> Optional[T]:
         self.ifPresent(fn)
         return self
@@ -162,10 +162,27 @@ def getComments(commentElements: list[WebElement]) -> list[Comment] | None:
 def getCommentsOfPost(postUrl: str) -> list[Comment] | None:
     webDriver = driver.getWebDriver()
     webDriver.get(postUrl)
-    return Optional.ofNullable(find_elements_by_xpath(webDriver, "//div[@data-sigil='comment']"))\
-        .map(lambda els: getComments(els))\
-        .get()
+    
+    commentCount = 0
+    while True:
+        commentElements = Optional.ofNullable(find_elements_by_xpath(webDriver, "//div[@data-sigil='comment']")).orElse([])
+        currentCommentCount = len(commentElements)
+        if currentCommentCount > commentCount:
+            commentCount = currentCommentCount
+        else:
+            # No more change after clicking load more comment
+            break
 
+        # Try clicking load more comment
+        Optional.ofNullable(find_element_by_xpath(webDriver, "//div[contains(@class, 'async_elem')]//a")).ifPresent(lambda x: x.click())
+        # Wait a little for ajax to finish loading the comments
+        WebDriverWait(webDriver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "div")))
+
+    if commentCount > 0:
+        return getComments(commentElements)
+    return []
+
+# TODO: Implement this method
 def getImagesOfPost(postIds: str) -> list[str] | None:
     try: 
         return []
@@ -197,13 +214,7 @@ def createPost(postElement: WebElement) ->  Post | None:
     Optional.ofNullable(postContentElement).map(lambda x: find_element_by_xpath(x, ".//span[@data-sigil='more']//a")).ifPresent(lambda x: x.click())
     postContent = Optional.ofNullable(postContentElement).map(lambda x: x.text).orElse("")
     
-    comments = Optional.ofNullable(getCommentsOfPost(postUrl)).orError()
-    for comment in comments:
-        comment.postId = postId
-        
-    images = getImagesOfPost(postUrl)
-    
-    return Post(postUrl, None, None, postContent.text, images, comments, postTimestamp, postUser, postUrl)
+    return Post(postId, None, None, postContent, None, None, postTimestamp, postUser, postUrl)
     
 def createPostsWithPageId(pageId: str, els: list[WebElement], cutOffFn: typing.Callable[[int, Post], bool]) -> list[Post]:
     posts: list[Post] = []
@@ -218,6 +229,12 @@ def createPostsWithPageId(pageId: str, els: list[WebElement], cutOffFn: typing.C
         post.pageId = pageId
         post.groupId = None
         posts.append(post)
+    
+    for post in posts:
+        comments = Optional.ofNullable(getCommentsOfPost(post.url)).orError()
+        for comment in comments:
+            comment.postId = post.postId
+        
     return posts
 
 def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Post], bool]) -> list[Post] | None:
@@ -311,7 +328,8 @@ def outputComments(comments: list[Comment] | None, path: str, group: str, id: st
     
 # NOTE: For testing-purposes only
 def main():
-    outputPosts(getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000)), "crawled_data", "pages/etribune", "posts")
+    getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000))
+    # outputPosts(getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000)), "crawled_data", "pages/etribune", "posts")
 
 def limitNumberOfPostsCrawl(upperLimit: int, upperTimeDelta: timedelta=timedelta(days=30)) -> typing.Callable[[int, Post], bool]:
     def fn(count: int, post: Post) -> bool:
