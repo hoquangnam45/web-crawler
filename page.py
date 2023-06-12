@@ -96,7 +96,7 @@ class Optional(Generic[T]):
         return Optional(self.val)
         
 class Post: 
-    def __init__(self, postId: str, pageId: str | None, groupId: str | None, content: str, images: list[str] | None, comments: list[Comment] | None, timestamp: datetime, userId: str, url: str):
+    def __init__(self, postId: str, pageId: str | None, groupId: str | None, content: str, images: list[Image] | None, comments: list[Comment] | None, timestamp: datetime, userId: str, url: str):
         self.postId = postId
         self.pageId = pageId
         self.groupId = groupId
@@ -119,9 +119,15 @@ class Comment:
         self.url = url
         self.postId = postId
         self.replies = replies
+    
+class Image:
+    def __init__(self, imageId: str, url: str, sourceUrl: str):
+        self.imageId = imageId
+        self.url = url
+        self.sourceUrl = sourceUrl
 
 def getComment(commentElement: WebElement) -> Comment | None:
-    commentUrl = Optional.ofNullable(find_element_by_xpath(commentElement, ".//div[contains(@data-sigil, 'feed_story_ring')]//a')]"))\
+    commentUrl = Optional.ofNullable(find_element_by_xpath(commentElement, ".//div[contains(@data-sigil, 'feed_story_ring')]//a"))\
         .map(lambda x: get_attribute(x, "href"))\
         .orError()
     commentUser = Optional.ofNullable(get_path_by_index(commentUrl, 1)).orError()
@@ -134,15 +140,16 @@ def getComment(commentElement: WebElement) -> Comment | None:
     
     commentContent = commentBodyElement.text
     
-    commentTimestamp = Optional.ofNullable(find_element_by_xpath(commentElement, "./div[contains(@data-sigil, 'ufi-inline-comment-actions')]//abbr"))\
+    commentTimestamp = Optional.ofNullable(find_element_by_xpath(commentElement, ".//div[contains(@data-sigil, 'ufi-inline-comment-actions')]//abbr"))\
         .map(lambda x: x.text)\
         .map(parseTimestamp)\
         .orError()
 
     # Expand more replies
-    replies = Optional.ofNullable(find_element_by_xpath(commentElement, ".//div[contains(@data-sigil, 'replies-see-more')]//a"))\
-        .peek(lambda x: x.click())\
-        .map(lambda _: find_elements_by_xpath(commentElement, ".//div[contains(@data-sigil, 'comment inline-reply']"))\
+    Optional.ofNullable(find_element_by_xpath(commentElement, ".//div[contains(@data-sigil, 'replies-see-more')]//a"))\
+        .peek(lambda x: x.click())
+            
+    replies = Optional.ofNullable(find_elements_by_xpath(commentElement, ".//div[contains(@data-sigil, 'comment inline-reply')]"))\
         .map(lambda els: getComments(els))\
         .peek(lambda comments: setReplyTo(comments, commentId))\
         .get()
@@ -159,9 +166,9 @@ def getComments(commentElements: list[WebElement]) -> list[Comment] | None:
             return None
     return comments
     
-def getCommentsOfPost(postUrl: str) -> list[Comment] | None:
+def getCommentsOfUrl(url: str) -> list[Comment] | None:
     webDriver = driver.getWebDriver()
-    webDriver.get(postUrl)
+    webDriver.get(url)
     
     commentCount = 0
     while True:
@@ -182,12 +189,37 @@ def getCommentsOfPost(postUrl: str) -> list[Comment] | None:
         return getComments(commentElements)
     return []
 
-# TODO: Implement this method
-def getImagesOfPost(postIds: str) -> list[str] | None:
-    try: 
-        return []
-    except:
+def getImage(imageElement: WebElement) -> Image | None:
+    imageUrl = Optional.ofNullable(find_element_by_xpath(imageElement, ".//a"))\
+        .map(lambda x: get_attribute(x, "href"))\
+        .orError()
+    imageId = Optional.ofNullable(imageUrl)\
+        .map(lambda x: get_parameters(x, "id"))\
+        .map(lambda x: x[0])\
+        .orError()
+    imageSrc = Optional.ofNullable(find_element_by_xpath(imageElement, ".//i[@role = 'img']"))\
+        .map(lambda x: value_of_css_property(x, "background-image"))\
+        .map(lambda x: x.replace('url("', '').replace('")', ''))\
+        .orError()
+    return Image(imageId, imageUrl, imageSrc)
+        
+def getImagesOfUrl(url: str) -> list[Image] | None:
+    webDriver = driver.getWebDriver()
+    webDriver.get(url)
+    
+    imageElements = Optional.ofNullable(find_element_by_xpath(webDriver, ".//div[@data-ft = '{\"tn\":\"H\"}']"))\
+        .map(lambda el: find_elements_by_xpath(el, ".//div[@data-gt = '{\"tn\":\"E\"}']"))\
+        .filter(lambda x: len(x) > 0)\
+        .get()
+    if imageElements is None:
         return None
+    ret: list[Image] = []
+    for el in imageElements:
+        img = getImage(el)
+        if img is None:
+            return None
+        ret.append(img)
+    return ret
     
 def createPost(postElement: WebElement) ->  Post | None:
     postStoryContainer = Optional.ofNullable(find_element_by_xpath(postElement, ".//div[contains(@class, 'story_body_container')]")).orError()
@@ -216,9 +248,8 @@ def createPost(postElement: WebElement) ->  Post | None:
     
     return Post(postId, None, None, postContent, None, None, postTimestamp, postUser, postUrl)
     
-def createPostsWithPageId(pageId: str, els: list[WebElement], cutOffFn: typing.Callable[[int, Post], bool]) -> list[Post]:
+def createPostsWithPageId(pageId: str, els: list[WebElement], cutOffFn: typing.Callable[[int, Post], bool], count: int) -> list[Post]:
     posts: list[Post] = []
-    count = 0
     for el in els:
         count += 1
         post = createPost(el)
@@ -231,30 +262,39 @@ def createPostsWithPageId(pageId: str, els: list[WebElement], cutOffFn: typing.C
         posts.append(post)
     
     for post in posts:
-        comments = Optional.ofNullable(getCommentsOfPost(post.url)).orError()
+        images = Optional.ofNullable(getImagesOfUrl(post.url)).orElse([])
+        post.images = images
+        comments = Optional.ofNullable(getCommentsOfUrl(post.url)).orError()
         for comment in comments:
             comment.postId = post.postId
-        
+        post.comments = comments
+
     return posts
 
 def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Post], bool]) -> list[Post] | None:
     webDriver = driver.getWebDriver()
     webDriver.get(constants.FB_URL + "/" + pageId)
 
+    allPosts: list[Post] = []
     # Scroll through the page to load posts
     lastHeight = webDriver.execute_script("return document.body.scrollHeight")
     while True:
+        count = len(allPosts)
+        posts = Optional.ofNullable(find_elements_by_xpath(webDriver, "//article[contains(@data-sigil, 'story-div story-popup-metadata  story-popup-metadata feed-ufi-metadata')]"))\
+            .map(lambda x: createPostsWithPageId(pageId, x, cutOffCheck, count))\
+            .orElse([])
         webDriver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         WebDriverWait(webDriver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "div")))
         newHeight = webDriver.execute_script("return document.body.scrollHeight")
         if newHeight == lastHeight:
             break
-        lastHeight = newHeight
+        lastHeight = newHeight        
+        allPosts.extend(posts)
+        if (len(allPosts) == count):
+            continue
+        break
 
-    # Extract the post data
-    return Optional.ofNullable(find_elements_by_xpath(webDriver, "//article[contains(@data-sigil, 'story-div story-popup-metadata  story-popup-metadata feed-ufi-metadata')]"))\
-        .map(lambda x: createPostsWithPageId(pageId, x, cutOffCheck))\
-        .get()
+    return allPosts
 
 def parseTimestamp(timestamp: str) -> datetime:
     # Check if it has
@@ -298,6 +338,12 @@ def get_attribute(element: WebElement, attribute: str) -> str | None:
 def find_element_by_tag_name(element: WebElement | WebDriver, tagName: str) -> WebElement | None:
     try:
         return element.find_element_by_tag_name(tagName)
+    except:
+        pass
+
+def value_of_css_property(element: WebElement, property: str) -> str | None:
+    try:
+        return element.value_of_css_property(property)
     except:
         pass
     
