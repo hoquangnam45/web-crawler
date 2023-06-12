@@ -288,8 +288,7 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Post], bool])
         newHeight = webDriver.execute_script("return document.body.scrollHeight")
         if newHeight == lastHeight:
             break
-        lastHeight = newHeight        
-        allPosts.extend(posts)
+        lastHeight = newHeight        allPosts.extend(posts)
         if (len(allPosts) == count):
             continue
         break
