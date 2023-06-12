@@ -248,8 +248,9 @@ def createPost(postElement: WebElement) ->  Post | None:
     
     return Post(postId, None, None, postContent, None, None, postTimestamp, postUser, postUrl)
     
-def createPostsWithPageId(pageId: str, els: list[WebElement], cutOffFn: typing.Callable[[int, Post], bool], count: int) -> list[Post]:
+def createPostsWithPageId(pageId: str, els: list[WebElement], cutOffFn: typing.Callable[[int, Post], bool]) -> list[Post]:
     posts: list[Post] = []
+    count = 0
     for el in els:
         count += 1
         post = createPost(el)
@@ -271,29 +272,31 @@ def createPostsWithPageId(pageId: str, els: list[WebElement], cutOffFn: typing.C
 
     return posts
 
-def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Post], bool]) -> list[Post] | None:
+def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[Post, None]], bool]) -> list[Post] | None:
     webDriver = driver.getWebDriver()
     webDriver.get(constants.FB_URL + "/" + pageId)
 
-    allPosts: list[Post] = []
     # Scroll through the page to load posts
     lastHeight = webDriver.execute_script("return document.body.scrollHeight")
     while True:
-        count = len(allPosts)
-        posts = Optional.ofNullable(find_elements_by_xpath(webDriver, "//article[contains(@data-sigil, 'story-div story-popup-metadata  story-popup-metadata feed-ufi-metadata')]"))\
-            .map(lambda x: createPostsWithPageId(pageId, x, cutOffCheck, count))\
-            .orElse([])
         webDriver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        WebDriverWait(webDriver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "div")))
+        WebDriverWait(webDriver, 10)
         newHeight = webDriver.execute_script("return document.body.scrollHeight")
         if newHeight == lastHeight:
             break
-        lastHeight = newHeight        allPosts.extend(posts)
-        if (len(allPosts) == count):
-            continue
-        break
-
-    return allPosts
+        lastHeight = newHeight
+        
+        # Perform some cut off check to see whether we should scroll down more
+        if (Optional.ofNullable(find_elements_by_xpath(webDriver, "//article[contains(@data-sigil, 'story-div story-popup-metadata  story-popup-metadata feed-ufi-metadata')]"))\
+            .map(lambda x: len(x))\
+            .map(lambda x: cutOffCheck(x, None))\
+            .orElse(True)): 
+            break
+    
+    # Query elements from the page 
+    return Optional.ofNullable(find_elements_by_xpath(webDriver, "//article[contains(@data-sigil, 'story-div story-popup-metadata  story-popup-metadata feed-ufi-metadata')]"))\
+        .map(lambda x: createPostsWithPageId(pageId, x, cutOffCheck))\
+        .orElse([])
 
 def parseTimestamp(timestamp: str) -> datetime:
     # Check if it has
@@ -376,14 +379,18 @@ def main():
     getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000))
     # outputPosts(getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000)), "crawled_data", "pages/etribune", "posts")
 
-def limitNumberOfPostsCrawl(upperLimit: int, upperTimeDelta: timedelta=timedelta(days=30)) -> typing.Callable[[int, Post], bool]:
-    def fn(count: int, post: Post) -> bool:
+def limitNumberOfPostsCrawl(upperLimit: int, upperTimeDelta: timedelta=timedelta(days=30)) -> typing.Callable[[int, Union[Post, None]], bool]:
+    def fn(count: int, post: Post | None) -> bool:
         now = datetime.now()
         if count > upperLimit:
             return True
-        duration = now - post.timestamp
-        if duration > upperTimeDelta:
-            return True
+        
+        if post is not None:
+            duration = now - post.timestamp
+            if duration > upperTimeDelta:
+                return True
+            return False
+        
         return False
     return fn 
  
