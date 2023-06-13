@@ -67,7 +67,7 @@ class Optional(Generic[T]):
             return Optional(None)
         return Optional(fn(self.val))
     
-    def peek(self, fn: typing.Callable[[T], None]) -> Optional[T]:
+    def peek(self, fn: typing.Callable[[T], Any]) -> Optional[T]:
         self.ifPresent(fn)
         return self
     
@@ -274,7 +274,7 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, datetime], bo
     lastHeight = webDriver.execute_script("return document.body.scrollHeight")
     while True:
         webDriver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(10)
+        WebDriverWait(webDriver, 20).until(lambda _: webDriver.execute_script("return document.body.scrollHeight") > lastHeight)
         newHeight = webDriver.execute_script("return document.body.scrollHeight")
         if newHeight == lastHeight:
             break
@@ -283,6 +283,7 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, datetime], bo
         # Perform some cut off check to see whether we should scroll down more
         lastPostElement = Optional.ofNullable(find_element_by_xpath(webDriver, "(//div[@aria-posinset])[last()]")).orError()
         postPos = Optional.ofNullable(get_attribute(lastPostElement, "aria-posinset")).map(lambda x: int(x)).orError()
+        print(postPos)
         postTimestamp = Optional.ofNullable(getPostTimestamp(lastPostElement)).orError()
         if cutOffCheck(postPos, postTimestamp):
             break
@@ -300,21 +301,30 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, datetime], bo
             
     return createPostsWithUrls(postUrls)
 
-def getPostTimestamp(postElement: WebElement) -> datetime | None:
+def getPostTimestamp(postElement: WebElement, maxTry: int = 10, timeout: int = 10) -> datetime | None:
     webDriver = driver.getWebDriver()
-    return Optional.ofNullable(get_attribute(postElement, "aria-describedby"))\
-        .map(lambda x: x.split(" "))\
-        .map(lambda x: find_element_by_xpath(postElement, ".//*[@id = '" + x[0] + "']"))\
-        .peek(lambda x: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", x))\
-        .peek(lambda x: WebDriverWait(webDriver, 5).until(EC.visibility_of_element_located(By.ID), Optional.ofNullable(get_attribute(x, "id")).orError()))\
-        .peek(lambda x: ActionChains(webDriver).move_to_element(x).perform())\
-        .peek(lambda x: time.sleep(1))\
-        .map(lambda x: find_element_by_xpath(x, ".//*[@aria-describedby]"))\
-        .map(lambda x: get_attribute(x, "aria-describedby"))\
-        .map(lambda x: find_element_by_xpath(webDriver, "//*[@id = '" + x + "']"))\
-        .map(lambda x: x.text)\
-        .map(parseTimestamp)\
-        .get()
+    for _ in range(maxTry):
+        # NOTE: Why do like this? because FB will collapse the header element if it's not in view, that's why it's necessary to scroll to post first before scrolling to the header element
+        timestamp = Optional.ofNullable(get_attribute(postElement, "aria-describedby"))\
+            .map(lambda x: x.split(" "))\
+            .map(lambda x: find_element_by_xpath(postElement, ".//*[@id = '" + x[0] + "']"))\
+            .peek(lambda _: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", postElement))\
+            .peek(lambda _: WebDriverWait(webDriver, timeout).until(EC.visibility_of(postElement)))\
+            .peek(lambda x: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", x))\
+            .peek(lambda x: WebDriverWait(webDriver, timeout).until(EC.visibility_of_element_located((By.ID, get_attribute(x, "id")))))\
+            .peek(lambda x: ActionChains(webDriver).move_to_element(x).perform())\
+            .peek(lambda x: WebDriverWait(webDriver, timeout).until(lambda _: Optional.ofNullable(find_element_by_xpath(x, ".//*[@aria-describedby]")).isPresent()))\
+            .map(lambda x: find_element_by_xpath(x, ".//*[@aria-describedby]"))\
+            .map(lambda x: get_attribute(x, "aria-describedby"))\
+            .peek(lambda x: WebDriverWait(webDriver, timeout).until(lambda innerWebDriver: Optional.ofNullable(find_element_by_xpath(innerWebDriver, "//*[@id = '" + x + "']")).isPresent()))\
+            .map(lambda x: find_element_by_xpath(webDriver, "//*[@id = '" + x + "']"))\
+            .map(lambda x: x.text)\
+            .map(parseTimestamp)\
+            .get()
+        if timestamp is not None:
+            return timestamp
+    
+    return None
 
 def getPostUrl(postElement: WebElement) -> str | None:
     return Optional.ofNullable(get_attribute(postElement, "aria-describedby"))\
@@ -404,7 +414,7 @@ def outputComments(comments: list[Comment] | None, path: str, group: str, id: st
     
 # NOTE: For testing-purposes only
 def main():
-    getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000))
+    getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000))
     # outputPosts(getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000)), "crawled_data", "pages/etribune", "posts")
 
 def limitNumberOfPostsCrawl(upperLimit: int, upperTimeDelta: timedelta=timedelta(days=30)) -> typing.Callable[[int, datetime], bool]:
