@@ -40,8 +40,8 @@ def initDriver() -> WebDriver:
     chrome_options.add_argument("--ignore-certificate-errors")
     chrome_options.add_argument("--disable-blink-features=AutomationControllered")
     chrome_options.add_experimental_option('useAutomationExtension', False)
-    chrome_options.add_argument("--user-data-dir=/home/ttl/Documents/SeleniumUserDataDir")
-    chrome_options.add_argument("--profile-directory=Default")
+    chrome_options.add_argument("--user-data-dir=" + constants.USER_DATA_DIR)
+    chrome_options.add_argument("--profile-directory=" + constants.USER_PROFILE)
     prefs = {"profile.default_content_setting_values.notifications": 2}
     chrome_options.add_experimental_option("prefs", prefs)
     chrome_options.add_argument("--start-maximized")  # open Browser in maximized mode
@@ -49,7 +49,7 @@ def initDriver() -> WebDriver:
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
     chrome_options.add_argument('disable-infobars')
-    chrome_options.add_argument("user-agent=" + constants.USER_AGENT)
+    # chrome_options.add_argument("user-agent=" + constants.USER_AGENT)
     driver = webdriver.Chrome(options=chrome_options)
     
     return driver

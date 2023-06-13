@@ -2,6 +2,7 @@ from __future__ import annotations
 import csv
 from datetime import datetime, timedelta
 import os
+import time
 from typing import Tuple, Union
 import typing
 from selenium.webdriver.chrome.webdriver import WebDriver
@@ -15,6 +16,8 @@ from typing import Any
 from typing import Type
 from urllib.parse import parse_qs, urlparse
 from typing import TypeVar, Generic
+from selenium.webdriver.common.action_chains import ActionChains
+
 
 T = TypeVar('T')  # Declare a type variable
 K = TypeVar('K')
@@ -248,31 +251,22 @@ def createPost(postElement: WebElement) ->  Post | None:
     
     return Post(postId, None, None, postContent, None, None, postTimestamp, postUser, postUrl)
     
-def createPostsWithPageId(pageId: str, els: list[WebElement], cutOffFn: typing.Callable[[int, Post], bool]) -> list[Post]:
-    posts: list[Post] = []
-    count = 0
-    for el in els:
-        count += 1
-        post = createPost(el)
-        if post is None:
-            continue
-        if cutOffFn(count, post):
-            break
-        post.pageId = pageId
-        post.groupId = None
-        posts.append(post)
-    
-    for post in posts:
-        images = Optional.ofNullable(getImagesOfUrl(post.url)).orElse([])
-        post.images = images
-        comments = Optional.ofNullable(getCommentsOfUrl(post.url)).orError()
-        for comment in comments:
-            comment.postId = post.postId
-        post.comments = comments
+def createPostsWithUrls(postUrls: list[str]) -> list[Post] | None:
+    # for postUrl in postUrls:
+    #     postId = "" # TODO:
+    #     postContent = ""
+    #     post = Post(postId, pageId, None, postContent)
+    #     images = Optional.ofNullable(getImagesOfUrl(postUrl)).orElse([])
+    #     postUrl.images = images
+    #     comments = Optional.ofNullable(getCommentsOfUrl(postUrl)).orError()
+    #     for comment in comments:
+    #         comment.postId = postId
+    #     postUrl.comments = comments
 
-    return posts
+    # return posts
+    pass
 
-def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[Post, None]], bool]) -> list[Post] | None:
+def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, datetime], bool]) -> list[Post] | None:
     webDriver = driver.getWebDriver()
     webDriver.get(constants.FB_URL + "/" + pageId)
 
@@ -280,26 +274,60 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[Post, N
     lastHeight = webDriver.execute_script("return document.body.scrollHeight")
     while True:
         webDriver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        WebDriverWait(webDriver, 10)
+        time.sleep(10)
         newHeight = webDriver.execute_script("return document.body.scrollHeight")
         if newHeight == lastHeight:
             break
         lastHeight = newHeight
         
         # Perform some cut off check to see whether we should scroll down more
-        if (Optional.ofNullable(find_elements_by_xpath(webDriver, "//article[contains(@data-sigil, 'story-div story-popup-metadata  story-popup-metadata feed-ufi-metadata')]"))\
-            .map(lambda x: len(x))\
-            .map(lambda x: cutOffCheck(x, None))\
-            .orElse(True)): 
+        lastPostElement = Optional.ofNullable(find_element_by_xpath(webDriver, "(//div[@aria-posinset])[last()]")).orError()
+        postPos = Optional.ofNullable(get_attribute(lastPostElement, "aria-posinset")).map(lambda x: int(x)).orError()
+        postTimestamp = Optional.ofNullable(getPostTimestamp(lastPostElement)).orError()
+        if cutOffCheck(postPos, postTimestamp):
             break
     
     # Query elements from the page 
-    return Optional.ofNullable(find_elements_by_xpath(webDriver, "//article[contains(@data-sigil, 'story-div story-popup-metadata  story-popup-metadata feed-ufi-metadata')]"))\
-        .map(lambda x: createPostsWithPageId(pageId, x, cutOffCheck))\
-        .orElse([])
+    els = Optional.ofNullable(find_elements_by_xpath(webDriver, "//div[@aria-posinset]")).orError()
+    postUrls: list[str] = []
+    for el in els:
+        postPos = Optional.ofNullable(get_attribute(el, "aria-posinset")).map(lambda x: int(x)).orError()
+        postTimestamp = Optional.ofNullable(getPostTimestamp(el)).orError()
+        postUrl = Optional.ofNullable(getPostUrl(el)).orError()
+        if cutOffCheck(postPos, postTimestamp):
+            continue
+        postUrls.append(postUrl)
+            
+    return createPostsWithUrls(postUrls)
 
+def getPostTimestamp(postElement: WebElement) -> datetime | None:
+    webDriver = driver.getWebDriver()
+    return Optional.ofNullable(get_attribute(postElement, "aria-describedby"))\
+        .map(lambda x: x.split(" "))\
+        .map(lambda x: find_element_by_xpath(postElement, ".//*[@id = '" + x[0] + "']"))\
+        .peek(lambda x: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", x))\
+        .peek(lambda x: WebDriverWait(webDriver, 5).until(EC.visibility_of_element_located(By.ID), Optional.ofNullable(get_attribute(x, "id")).orError()))\
+        .peek(lambda x: ActionChains(webDriver).move_to_element(x).perform())\
+        .peek(lambda x: time.sleep(1))\
+        .map(lambda x: find_element_by_xpath(x, ".//*[@aria-describedby]"))\
+        .map(lambda x: get_attribute(x, "aria-describedby"))\
+        .map(lambda x: find_element_by_xpath(webDriver, "//*[@id = '" + x + "']"))\
+        .map(lambda x: x.text)\
+        .map(parseTimestamp)\
+        .get()
+
+def getPostUrl(postElement: WebElement) -> str | None:
+    return Optional.ofNullable(get_attribute(postElement, "aria-describedby"))\
+        .map(lambda x: x.split(" "))\
+        .map(lambda x: find_element_by_xpath(postElement, ".//*[@id = '" + x[0] + "']//a"))\
+        .map(lambda x: get_attribute(x, "href"))\
+        .get()
+        
 def parseTimestamp(timestamp: str) -> datetime:
-    # Check if it has
+    timestampTokens = timestamp.split(', ')
+    if len(timestampTokens) == 3: # It will be in the form: Weekday, %d tháng %m, %Y lúc %H:%M 
+        timestamp =  ", ".join(timestamp.split(', ')[1:len(timestamp) - 1]) # Remove weekday
+    # Check if it has following formats
     formats = ["%d tháng %m lúc %H:%M", "%d tháng %m, %Y lúc %H:%M"]
     for format in formats:
         try:
@@ -379,18 +407,14 @@ def main():
     getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000))
     # outputPosts(getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000)), "crawled_data", "pages/etribune", "posts")
 
-def limitNumberOfPostsCrawl(upperLimit: int, upperTimeDelta: timedelta=timedelta(days=30)) -> typing.Callable[[int, Union[Post, None]], bool]:
-    def fn(count: int, post: Post | None) -> bool:
+def limitNumberOfPostsCrawl(upperLimit: int, upperTimeDelta: timedelta=timedelta(days=30)) -> typing.Callable[[int, datetime], bool]:
+    def fn(count: int, postTimestamp: datetime) -> bool:
         now = datetime.now()
         if count > upperLimit:
             return True
-        
-        if post is not None:
-            duration = now - post.timestamp
-            if duration > upperTimeDelta:
-                return True
-            return False
-        
+        duration = now - postTimestamp
+        if duration > upperTimeDelta:
+            return True
         return False
     return fn 
  
