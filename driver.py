@@ -21,7 +21,7 @@ def getWebDriver() -> WebDriver:
 def initDriver() -> WebDriver:
     WINDOW_SIZE = "1000,2000"
     chrome_options = Options()
-    #chrome_options.add_argument("--headless")
+    # chrome_options.add_argument("--headless")
     chrome_options.add_argument("--window-size=%s" % WINDOW_SIZE)
     chrome_options.add_argument('--no-sandbox')
     chrome_options.add_argument('disable-infobars')

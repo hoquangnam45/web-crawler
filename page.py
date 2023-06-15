@@ -1,8 +1,10 @@
 from __future__ import annotations
+import argparse
 import csv
 from datetime import datetime, timedelta
 import os
 import time
+import traceback
 from typing import Tuple, Union
 import typing
 from selenium.webdriver.chrome.webdriver import WebDriver
@@ -17,6 +19,9 @@ from typing import Type
 from urllib.parse import parse_qs, urlparse
 from typing import TypeVar, Generic
 from selenium.webdriver.common.action_chains import ActionChains
+import logging
+from selenium.common.exceptions import InvalidSessionIdException
+from selenium.common.exceptions import TimeoutException
 
 
 T = TypeVar('T')  # Declare a type variable
@@ -90,7 +95,7 @@ class Optional(Generic[T]):
     def isEmpty(self) -> bool:
         return self.val is None
     
-    def ifPresent(self, fn: typing.Callable[[T], None]):
+    def ifPresent(self, fn: typing.Callable[[T], Any]):
         self.map(fn)
     
     def filter(self, fn: typing.Callable[[T], bool]) -> Optional[T]:
@@ -266,47 +271,79 @@ def createPostsWithUrls(postUrls: list[str]) -> list[Post] | None:
     # return posts
     pass
 
-def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, datetime], bool]) -> list[Post] | None:
+def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetime, None]], bool]) -> list[Post] | None:
     webDriver = driver.getWebDriver()
     webDriver.get(constants.FB_URL + "/" + pageId)
 
     # Scroll through the page to load posts
-    lastHeight = webDriver.execute_script("return document.body.scrollHeight")
-    while True:
-        webDriver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        WebDriverWait(webDriver, 20).until(lambda _: webDriver.execute_script("return document.body.scrollHeight") > lastHeight)
-        newHeight = webDriver.execute_script("return document.body.scrollHeight")
-        if newHeight == lastHeight:
-            break
-        lastHeight = newHeight
-        
-        # Perform some cut off check to see whether we should scroll down more
-        lastPostElement = Optional.ofNullable(find_element_by_xpath(webDriver, "(//div[@aria-posinset])[last()]")).orError()
-        postPos = Optional.ofNullable(get_attribute(lastPostElement, "aria-posinset")).map(lambda x: int(x)).orError()
-        print(postPos)
-        postTimestamp = Optional.ofNullable(getPostTimestamp(lastPostElement)).orError()
-        if cutOffCheck(postPos, postTimestamp):
-            break
-    
-    # Query elements from the page 
-    els = Optional.ofNullable(find_elements_by_xpath(webDriver, "//div[@aria-posinset]")).orError()
     postUrls: list[str] = []
-    for el in els:
-        postPos = Optional.ofNullable(get_attribute(el, "aria-posinset")).map(lambda x: int(x)).orError()
-        postTimestamp = Optional.ofNullable(getPostTimestamp(el)).orError()
-        postUrl = Optional.ofNullable(getPostUrl(el)).orError()
-        if cutOffCheck(postPos, postTimestamp):
-            continue
-        postUrls.append(postUrl)
+    while True:
+        try:
+            progressBarElement = find_element_by_xpath(webDriver, "//*[@role = 'article']//*[@role = 'progressbar' and @data-visualcompletion = 'loading-state']")
+            webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", progressBarElement)
+            WebDriverWait(webDriver, 20).until(EC.visibility_of(progressBarElement))
+        except TimeoutException:    
+            break
+        
+        def fn() -> bool:
+            cutOff: bool = False
+            postElements = find_elements_by_xpath(webDriver, "//div[@aria-posinset]")
+            for postElement in postElements:
+                try:
+                    # NOTE: FB can include short that is not a post which would be troublesome to get timestamp
+                    postTimestamp = getPostTimestamp(postElement)
+                    postUrl = getPostUrl(postElement)
+                    
+                    cutOff = cutOffCheck(len(postUrls), postTimestamp)
+                    # Perform some cut off check to see whether we should scroll down more
+                    if cutOff:
+                        break
+                    else:
+                        postUrls.append(postUrl)
+                        logging.info("collect " + str(len(postUrls)) + " post urls")
+                except:
+                    # NOTE: Not a post
+                    continue
             
+            for i in range(len(postElements)):
+                try:
+                    postElement = postElements[i]
+                    
+                    webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", postElement)
+                    WebDriverWait(webDriver, 10).until(EC.visibility_of(postElement))
+                    
+                    # NOTE: Why it starts to crash about 4 hundred posts in
+                    # NOTE: It create some element that position absolute, at the top of the page
+                    # NOTE: Remove element node so that it doesn't crash the browser from being run out of memory
+                    # NOTE: This hack is ugly and prone to UI changes but no better way now
+                    webDriver.execute_script("arguments[0].parentNode.parentNode.parentNode.parentNode.parentNode.remove()", postElement)
+
+                except:
+                    pass
+            
+            # NOTE: Hack to fix out of memory issues
+            errornousElements = find_elements_by_xpath(webDriver, "//svg:text[contains(@id, 'gid')]/../..")
+            for i in range(len(errornousElements)):
+                webDriver.execute_script("arguments[0].remove()", errornousElements[i])
+
+            return cutOff
+        
+        shouldBreak = exceptionHandler(fn)
+        
+        if shouldBreak is None:
+            # NOTE: Exception handler had failed all attempts to recover from exception
+            raise ValueError("something happened")
+        if shouldBreak is True:
+           break
+
     return createPostsWithUrls(postUrls)
 
-def getPostTimestamp(postElement: WebElement, maxTry: int = 10, timeout: int = 10) -> datetime | None:
+def getPostTimestamp(postElement: WebElement, timeout: int = 10) -> datetime | None:
     webDriver = driver.getWebDriver()
-    for _ in range(maxTry):
-        # NOTE: Why do like this? because FB will collapse the header element if it's not in view, that's why it's necessary to scroll to post first before scrolling to the header element
-        timestamp = Optional.ofNullable(get_attribute(postElement, "aria-describedby"))\
+    try:
+        return Optional.ofNullable(get_attribute(postElement, "aria-describedby"))\
             .map(lambda x: x.split(" "))\
+            .peek(lambda x: logging.info("post id: " + x[0]))\
             .map(lambda x: find_element_by_xpath(postElement, ".//*[@id = '" + x[0] + "']"))\
             .peek(lambda _: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", postElement))\
             .peek(lambda _: WebDriverWait(webDriver, timeout).until(EC.visibility_of(postElement)))\
@@ -316,22 +353,21 @@ def getPostTimestamp(postElement: WebElement, maxTry: int = 10, timeout: int = 1
             .peek(lambda x: WebDriverWait(webDriver, timeout).until(lambda _: Optional.ofNullable(find_element_by_xpath(x, ".//*[@aria-describedby]")).isPresent()))\
             .map(lambda x: find_element_by_xpath(x, ".//*[@aria-describedby]"))\
             .map(lambda x: get_attribute(x, "aria-describedby"))\
+            .peek(lambda x: logging.info("aria-describedby: " + x))\
             .peek(lambda x: WebDriverWait(webDriver, timeout).until(lambda innerWebDriver: Optional.ofNullable(find_element_by_xpath(innerWebDriver, "//*[@id = '" + x + "']")).isPresent()))\
-            .map(lambda x: find_element_by_xpath(webDriver, "//*[@id = '" + x + "']"))\
-            .map(lambda x: x.text)\
+            .map(lambda x: find_element_by_xpath(webDriver, "//*[@id = '" + x + "']").text)\
+            .peek(lambda x: logging.info("text: " + x))\
             .map(parseTimestamp)\
             .get()
-        if timestamp is not None:
-            return timestamp
-    
-    return None
+    finally:
+        ActionChains(webDriver).move_by_offset(50, 50).perform()
 
-def getPostUrl(postElement: WebElement) -> str | None:
+def getPostUrl(postElement: WebElement) -> str:
     return Optional.ofNullable(get_attribute(postElement, "aria-describedby"))\
         .map(lambda x: x.split(" "))\
         .map(lambda x: find_element_by_xpath(postElement, ".//*[@id = '" + x[0] + "']//a"))\
         .map(lambda x: get_attribute(x, "href"))\
-        .get()
+        .orError()
         
 def parseTimestamp(timestamp: str) -> datetime:
     timestampTokens = timestamp.split(', ')
@@ -354,38 +390,47 @@ def parseTimestamp(timestamp: str) -> datetime:
         return datetime.now()
     raise ValueError("Recheck if facebook change their timestamp display formatting, this should not happened, here is the value it trying to parse: " + timestamp)    
 
-def find_element_by_id(element: WebElement | WebDriver, id: str) -> WebElement | None:
-    try:
-        return element.find_element_by_id(id)
-    except:
-        pass
-    
-def find_elements_by_xpath(driver: WebElement | WebDriver, xpath: str) -> list[WebElement] | None:
-    try:
-        return driver.find_elements_by_xpath(xpath)
-    except:
-        pass
 
-def find_element_by_xpath(element: WebElement | WebDriver, xpath: str) -> WebElement | None:
-    try:
-        return element.find_element_by_xpath(xpath)
-    except: 
-        pass
+def exceptionHandler(f: typing.Callable[[], T], maxRetries: int = 10, shouldLog: bool = True, reraise: bool = False) -> T | None:
+    e: Exception | None = None
+    for i in range(maxRetries):
+        try:
+            if i > 0:
+                logging.info("Retrying: " + str(i))
+            return f()
+        except InvalidSessionIdException as innerE:
+            if shouldLog:
+                logging.error(innerE) # TODO: Refresh session id
+                logging.error(traceback.format_exc())
+            e = innerE
+            pass
+        except Exception as innerE:
+            if shouldLog:
+                logging.error(innerE) # TODO: Refresh session id
+                logging.error(traceback.format_exc())
+            e = innerE
+            pass
+    if reraise:
+        if e is not None:
+            raise(e)
     
-def get_attribute(element: WebElement, attribute: str) -> str | None:
+def find_element_by_id(element: WebElement | WebDriver, id: str) -> WebElement:
+    return element.find_element_by_id(id)
+    
+def find_elements_by_xpath(driver: WebElement | WebDriver, xpath: str) -> list[WebElement]:
+    return driver.find_elements_by_xpath(xpath)
+
+def find_element_by_xpath(element: WebElement | WebDriver, xpath: str) -> WebElement:
+    return element.find_element_by_xpath(xpath)
+    
+def get_attribute(element: WebElement, attribute: str) -> str:
     return element.get_attribute(attribute)
-
+    
 def find_element_by_tag_name(element: WebElement | WebDriver, tagName: str) -> WebElement | None:
-    try:
-        return element.find_element_by_tag_name(tagName)
-    except:
-        pass
+    return element.find_element_by_tag_name(tagName)
 
 def value_of_css_property(element: WebElement, property: str) -> str | None:
-    try:
-        return element.value_of_css_property(property)
-    except:
-        pass
+    return element.value_of_css_property(property)
     
 def outputPosts(posts: list[Post] | None, path: str, group: str, id: str):
     if posts is None:
@@ -417,17 +462,38 @@ def main():
     getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000))
     # outputPosts(getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000)), "crawled_data", "pages/etribune", "posts")
 
-def limitNumberOfPostsCrawl(upperLimit: int, upperTimeDelta: timedelta=timedelta(days=30)) -> typing.Callable[[int, datetime], bool]:
-    def fn(count: int, postTimestamp: datetime) -> bool:
+def limitNumberOfPostsCrawl(upperLimit: int, upperTimeDelta: timedelta=timedelta(days=30)) -> typing.Callable[[int, Union[datetime, None]], bool]:
+    def fn(count: int, postTimestamp: datetime | None) -> bool:
         now = datetime.now()
         if count > upperLimit:
             return True
-        duration = now - postTimestamp
-        if duration > upperTimeDelta:
-            return True
+        if postTimestamp is not None:
+            duration = now - postTimestamp
+            if duration > upperTimeDelta:
+                return True
         return False
     return fn 
  
     
 if __name__ == "__main__":
+    # Create the argument parser
+    parser = argparse.ArgumentParser(description='Crawl fb page')
+
+    # Add arguments
+    parser.add_argument('--log', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                        default='info', help='Set the log level')
+
+    # Parse the arguments
+    args = parser.parse_args()
+
+    # Access the parsed arguments
+    loglevel = args.log
+
+    # Use the parsed arguments
+    print('Log level:', loglevel)
+    
+    numericLevel = getattr(logging, loglevel.upper(), None)
+    if not isinstance(numericLevel, int):
+        raise ValueError('Invalid log level: %s' % loglevel)
+    logging.basicConfig(level=numericLevel)
     main()
