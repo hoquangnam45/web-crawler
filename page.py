@@ -277,65 +277,104 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetim
 
     # Scroll through the page to load posts
     postUrls: list[str] = []
+    # hiddenContainer = exceptionHandler(lambda: find_element_by_xpath(webDriver, "//*[@hidden = 'true']"), 100, False, 1)
+    allErrornousGids: set[str] = set()
+    allErrornousLabelIds: set[str] = set()
+    
     while True:
         try:
+            # lastHeight = webDriver.execute_script("return document.body.scrollHeight")
+            # webDriver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+            # WebDriverWait(webDriver, 20).until(lambda innerWebDriver: innerWebDriver.execute_script("return document.body.scrollHeight") > lastHeight)
+            
+            lastHeight = webDriver.execute_script("return document.body.scrollHeight")
             progressBarElement = find_element_by_xpath(webDriver, "//*[@role = 'article']//*[@role = 'progressbar' and @data-visualcompletion = 'loading-state']")
             webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", progressBarElement)
-            WebDriverWait(webDriver, 20).until(EC.visibility_of(progressBarElement))
-        except TimeoutException:    
+            # WebDriverWait(webDriver, 20).until(EC.visibility_of(progressBarElement))
+            WebDriverWait(webDriver, 20).until(lambda innerWebDriver: innerWebDriver.execute_script("return document.body.scrollHeight") > lastHeight)
+        except TimeoutException:
             break
         
-        def fn() -> bool:
-            cutOff: bool = False
-            postElements = find_elements_by_xpath(webDriver, "//div[@aria-posinset]")
-            for postElement in postElements:
-                try:
-                    # NOTE: FB can include short that is not a post which would be troublesome to get timestamp
-                    postTimestamp = getPostTimestamp(postElement)
-                    postUrl = getPostUrl(postElement)
-                    
-                    cutOff = cutOffCheck(len(postUrls), postTimestamp)
-                    # Perform some cut off check to see whether we should scroll down more
-                    if cutOff:
-                        break
-                    else:
-                        postUrls.append(postUrl)
-                        logging.info("collect " + str(len(postUrls)) + " post urls")
-                except:
-                    # NOTE: Not a post
-                    continue
-            
-            for i in range(len(postElements)):
-                try:
-                    postElement = postElements[i]
-                    
-                    webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", postElement)
-                    WebDriverWait(webDriver, 10).until(EC.visibility_of(postElement))
-                    
-                    # NOTE: Why it starts to crash about 4 hundred posts in
-                    # NOTE: It create some element that position absolute, at the top of the page
-                    # NOTE: Remove element node so that it doesn't crash the browser from being run out of memory
-                    # NOTE: This hack is ugly and prone to UI changes but no better way now
-                    webDriver.execute_script("arguments[0].parentNode.parentNode.parentNode.parentNode.parentNode.remove()", postElement)
-
-                except:
-                    pass
-            
-            # NOTE: Hack to fix out of memory issues
-            errornousElements = find_elements_by_xpath(webDriver, "//svg:text[contains(@id, 'gid')]/../..")
-            for i in range(len(errornousElements)):
-                webDriver.execute_script("arguments[0].remove()", errornousElements[i])
-
-            return cutOff
+        cutOff: bool = False
+        postElements = find_elements_by_xpath(webDriver, "//div[@aria-posinset]")
         
-        shouldBreak = exceptionHandler(fn)
+        errornousGids: set[str] = set()
+        errornousLabelIds: set[str] = set()
         
-        if shouldBreak is None:
-            # NOTE: Exception handler had failed all attempts to recover from exception
-            raise ValueError("something happened")
-        if shouldBreak is True:
+        for postElement in postElements:
+            try:
+                # NOTE: FB can include short that is not a post which would be troublesome to get timestamp
+                postTimestamp = getPostTimestamp(postElement)
+                postUrl = getPostUrl(postElement)
+                
+                # WebDriverWait(webDriver, 10).until(lambda innerWebDriver: lenN(exceptionHandler(lambda: find_elements_by_xpath(postElement, ".//*[@aria-labelledby]"))) > 0)
+                labelIds = [get_attribute(el, "aria-labelledby") for el in find_elements_by_xpath(postElement, ".//*[@aria-labelledby]")]
+                for id in labelIds:
+                    errornousLabelIds.add(id)
+                    
+                gids = Optional.ofNullable(exceptionHandler(lambda: find_elements_by_xpath(postElement, ".//svg:use")))\
+                    .map(lambda els: list(filter(lambda el: "gid" in el, [get_attribute(el, "xlink:href") for el in els])))\
+                    .map(lambda gids: [gid[1:] for gid in gids])\
+                    .orElse([])
+                for id in gids:
+                    errornousGids.add(id)
+                
+                cutOff = cutOffCheck(len(postUrls), postTimestamp)
+                # Perform some cut off check to see whether we should scroll down more
+                if cutOff:
+                    break
+                else:
+                    postUrls.append(postUrl)
+                    logging.info("collect " + str(len(postUrls)) + " post urls")
+            except:
+                # NOTE: Not a post
+                continue
+        
+        for i in range(len(postElements)):
+            try:
+                postElement = postElements[i]
+                
+                webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", postElement)
+                WebDriverWait(webDriver, 10).until(EC.visibility_of(postElement))
+        
+                # NOTE: Why it starts to crash about 4 hundred posts in
+                # NOTE: What other side effect fb is doing beside creating the post element?
+                # NOTE: It create svg element that position absolute, at the end of the page
+                # NOTE: It seems to map timestamp -> gid element
+                # NOTE: It also create some div element inside a hidden container at the end of the page for timestamp
+                # NOTE: Remove element node so that it doesn't crash the browser from being run out of memory
+                # NOTE: This hack is ugly and prone to UI changes but no better way now
+                # NOTE: labelId -> gid (timestamp -> svg)
+                webDriver.execute_script("arguments[0].parentNode.parentNode.parentNode.parentNode.parentNode.remove()", postElement)
+
+            except:
+                pass
+            
+            # if hiddenContainer is not None:
+            #     webDriver.execute_script("arguments[0].innerHTML = arguments[1]", hiddenContainer, "")
+                
+            # for errornousEl in [exceptionHandler(lambda: find_element_by_xpath(webDriver, "//*[@id = '" + id + "']/.."), 1, False) for id in errornousLabelIds]:
+            #     if errornousEl is not None:
+            #         webDriver.execute_script("arguments[0].remove()", errornousEl)
+            # for errornousEl in [find_element_by_xpath(webDriver, "//*[@id = '" + gid + "']/../..") for gid in errornousGids]:
+            #     webDriver.execute_script("arguments[0].remove()", errornousEl)        
+        
+        for gid in allErrornousGids:
+            if gid not in errornousGids:
+                Optional.ofNullable(exceptionHandler(lambda: find_element_by_xpath(webDriver, "//*[@id = '" + gid + "']/../..")))\
+                    .ifPresent(lambda el: webDriver.execute_script("arguments[0].remove()", el))
+        
+        allErrornousGids = errornousGids
+        
+        for labelId in allErrornousLabelIds:
+            if labelId not in errornousLabelIds:
+                Optional.ofNullable(exceptionHandler(lambda: find_element_by_xpath(webDriver, "//*[@id = '" + labelId + "']/..")))\
+                    .ifPresent(lambda el: webDriver.execute_script("arguments[0].remove()", el))
+        allErrornousLabelIds = errornousLabelIds
+        
+        if cutOff is True:
            break
-
+       
     return createPostsWithUrls(postUrls)
 
 def getPostTimestamp(postElement: WebElement, timeout: int = 10) -> datetime | None:
@@ -361,6 +400,11 @@ def getPostTimestamp(postElement: WebElement, timeout: int = 10) -> datetime | N
             .get()
     finally:
         ActionChains(webDriver).move_by_offset(50, 50).perform()
+
+def lenN(xs: list | None) -> int:
+    if xs is None:
+        return 0
+    return len(xs)
 
 def getPostUrl(postElement: WebElement) -> str:
     return Optional.ofNullable(get_attribute(postElement, "aria-describedby"))\
@@ -391,7 +435,7 @@ def parseTimestamp(timestamp: str) -> datetime:
     raise ValueError("Recheck if facebook change their timestamp display formatting, this should not happened, here is the value it trying to parse: " + timestamp)    
 
 
-def exceptionHandler(f: typing.Callable[[], T], maxRetries: int = 10, shouldLog: bool = True, reraise: bool = False) -> T | None:
+def exceptionHandler(f: typing.Callable[[], T], maxRetries: int = 10, shouldLog: bool = True, delayInSec: int = 0, reraise: bool = False) -> T | None:
     e: Exception | None = None
     for i in range(maxRetries):
         try:
@@ -410,6 +454,9 @@ def exceptionHandler(f: typing.Callable[[], T], maxRetries: int = 10, shouldLog:
                 logging.error(traceback.format_exc())
             e = innerE
             pass
+        finally:
+            if delayInSec > 0:
+                time.sleep(delayInSec)
     if reraise:
         if e is not None:
             raise(e)
