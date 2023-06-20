@@ -49,7 +49,7 @@ def initDriver() -> WebDriver:
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
     chrome_options.add_argument('disable-infobars')
-    # chrome_options.add_argument("user-agent=" + constants.USER_AGENT)
+    chrome_options.add_argument("user-agent=" + constants.USER_AGENT)
     driver = webdriver.Chrome(options=chrome_options)
     
     return driver

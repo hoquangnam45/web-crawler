@@ -2,6 +2,7 @@ from __future__ import annotations
 import argparse
 import csv
 from datetime import datetime, timedelta
+import json
 import os
 import time
 import traceback
@@ -16,6 +17,7 @@ import driver
 import constants
 from typing import Any
 from typing import Type
+from typing import Tuple
 from urllib.parse import parse_qs, urlparse
 from typing import TypeVar, Generic
 from selenium.webdriver.common.action_chains import ActionChains
@@ -256,126 +258,98 @@ def createPost(postElement: WebElement) ->  Post | None:
     
     return Post(postId, None, None, postContent, None, None, postTimestamp, postUser, postUrl)
     
-def createPostsWithUrls(postUrls: list[str]) -> list[Post] | None:
-    # for postUrl in postUrls:
-    #     postId = "" # TODO:
-    #     postContent = ""
-    #     post = Post(postId, pageId, None, postContent)
-    #     images = Optional.ofNullable(getImagesOfUrl(postUrl)).orElse([])
-    #     postUrl.images = images
-    #     comments = Optional.ofNullable(getCommentsOfUrl(postUrl)).orError()
-    #     for comment in comments:
-    #         comment.postId = postId
-    #     postUrl.comments = comments
+def createPostsWithUrls(postEntriesPath: str) -> list[Post] | None:
+    with open(postEntriesPath, "r") as f:
+        csvReader = csv.reader(f)
+        webDriver = driver.getWebDriver()
+        for row in csvReader:
+            postUrl = row[0]
+            cursorUrl = row[1]
+            dateTime = datetime.strptime(row[2], '%Y-%m-%d %H:%M:%S')
+            webDriver.get(postUrl)
+            postId = "" # TODO:
+            # postContent = ""
+            # post = Post(postId, pageId, None, postContent)
+            # images = Optional.ofNullable(getImagesOfUrl(postUrl)).orElse([])
+            # postUrl.images = images
+            # comments = Optional.ofNullable(getCommentsOfUrl(postUrl)).orError()
+            # for comment in comments:
+            #     comment.postId = postId
+            # postUrl.comments = comments
 
     # return posts
     pass
 
-def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetime, None]], bool]) -> list[Post] | None:
+def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetime, None]], bool], batchSize: int = 500, cursorUrlPath: str = "postCursor.txt", postEntriesPath: str = "postEntries.txt") -> list[Post] | None:
     webDriver = driver.getWebDriver()
-    webDriver.get(constants.FB_URL + "/" + pageId)
+    defaultUrl = constants.FB_URL + "/" + pageId + "?v=timeline"
+    try:
+        with open(cursorUrlPath, 'r') as f:
+            cursorUrl = f.readline()
+            if len(cursorUrl.strip()) > 0:
+                webDriver.get(cursorUrl)
+            else:
+                webDriver.get(defaultUrl)
+    except:        
+        webDriver.get(defaultUrl)
 
-    # Scroll through the page to load posts
-    postUrls: list[str] = []
-    # hiddenContainer = exceptionHandler(lambda: find_element_by_xpath(webDriver, "//*[@hidden = 'true']"), 100, False, 1)
-    allErrornousGids: set[str] = set()
-    allErrornousLabelIds: set[str] = set()
+    batch: list[Tuple[str, str, datetime]] = []
+    batchIndex = -1
+    crawlCount = 0
+    currentBatch = -1
     
     while True:
-        try:
-            # lastHeight = webDriver.execute_script("return document.body.scrollHeight")
-            # webDriver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-            # WebDriverWait(webDriver, 20).until(lambda innerWebDriver: innerWebDriver.execute_script("return document.body.scrollHeight") > lastHeight)
-            
-            lastHeight = webDriver.execute_script("return document.body.scrollHeight")
-            progressBarElement = find_element_by_xpath(webDriver, "//*[@role = 'article']//*[@role = 'progressbar' and @data-visualcompletion = 'loading-state']")
-            webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", progressBarElement)
-            # WebDriverWait(webDriver, 20).until(EC.visibility_of(progressBarElement))
-            WebDriverWait(webDriver, 20).until(lambda innerWebDriver: innerWebDriver.execute_script("return document.body.scrollHeight") > lastHeight)
-        except TimeoutException:
-            break
-        
         cutOff: bool = False
-        postElements = find_elements_by_xpath(webDriver, "//div[@aria-posinset]")
-        
-        errornousGids: set[str] = set()
-        errornousLabelIds: set[str] = set()
+        postElements = find_elements_by_xpath(webDriver, "//*[@id = 'structured_composer_async_container']//*[@role = 'article' and @data-ft]")
         
         for postElement in postElements:
-            try:
-                # NOTE: FB can include short that is not a post which would be troublesome to get timestamp
-                postTimestamp = getPostTimestamp(postElement)
+            try: 
+                dataFt = get_attribute(postElement, "data-ft")
+                metadata = json.loads(dataFt)
+                
+                postTimestamp = datetime.fromtimestamp(metadata["page_insights"][metadata["content_owner_id_new"]]["post_context"]["publish_time"])
                 postUrl = getPostUrl(postElement)
+                cursorUrl = str(webDriver.current_url)
+            
+                cutOff = cutOffCheck(crawlCount, postTimestamp)
                 
-                # WebDriverWait(webDriver, 10).until(lambda innerWebDriver: lenN(exceptionHandler(lambda: find_elements_by_xpath(postElement, ".//*[@aria-labelledby]"))) > 0)
-                labelIds = [get_attribute(el, "aria-labelledby") for el in find_elements_by_xpath(postElement, ".//*[@aria-labelledby]")]
-                for id in labelIds:
-                    errornousLabelIds.add(id)
-                    
-                gids = Optional.ofNullable(exceptionHandler(lambda: find_elements_by_xpath(postElement, ".//svg:use")))\
-                    .map(lambda els: list(filter(lambda el: "gid" in el, [get_attribute(el, "xlink:href") for el in els])))\
-                    .map(lambda gids: [gid[1:] for gid in gids])\
-                    .orElse([])
-                for id in gids:
-                    errornousGids.add(id)
-                
-                cutOff = cutOffCheck(len(postUrls), postTimestamp)
                 # Perform some cut off check to see whether we should scroll down more
                 if cutOff:
                     break
                 else:
-                    postUrls.append(postUrl)
-                    logging.info("collect " + str(len(postUrls)) + " post urls")
-            except:
-                # NOTE: Not a post
-                continue
+                    batch.append((postUrl, cursorUrl, postTimestamp))
+                    crawlCount += 1
+                    logging.info("collect " + str(crawlCount) + " post entries")
+            except Exception as e:
+                logging.error(e)
         
-        for i in range(len(postElements)):
-            try:
-                postElement = postElements[i]
-                
-                webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", postElement)
-                WebDriverWait(webDriver, 10).until(EC.visibility_of(postElement))
+        with open(cursorUrlPath, 'w') as cursorF:
+            # NOTE: Go to next page, and save the cursor in case the need to resume later
+            cursorF.write(webDriver.current_url)
         
-                # NOTE: Why it starts to crash about 4 hundred posts in
-                # NOTE: What other side effect fb is doing beside creating the post element?
-                # NOTE: It create svg element that position absolute, at the end of the page
-                # NOTE: It seems to map timestamp -> gid element
-                # NOTE: It also create some div element inside a hidden container at the end of the page for timestamp
-                # NOTE: Remove element node so that it doesn't crash the browser from being run out of memory
-                # NOTE: This hack is ugly and prone to UI changes but no better way now
-                # NOTE: labelId -> gid (timestamp -> svg)
-                webDriver.execute_script("arguments[0].parentNode.parentNode.parentNode.parentNode.parentNode.remove()", postElement)
-
-            except:
-                pass
-            
-            # if hiddenContainer is not None:
-            #     webDriver.execute_script("arguments[0].innerHTML = arguments[1]", hiddenContainer, "")
-                
-            # for errornousEl in [exceptionHandler(lambda: find_element_by_xpath(webDriver, "//*[@id = '" + id + "']/.."), 1, False) for id in errornousLabelIds]:
-            #     if errornousEl is not None:
-            #         webDriver.execute_script("arguments[0].remove()", errornousEl)
-            # for errornousEl in [find_element_by_xpath(webDriver, "//*[@id = '" + gid + "']/../..") for gid in errornousGids]:
-            #     webDriver.execute_script("arguments[0].remove()", errornousEl)        
-        
-        for gid in allErrornousGids:
-            if gid not in errornousGids:
-                Optional.ofNullable(exceptionHandler(lambda: find_element_by_xpath(webDriver, "//*[@id = '" + gid + "']/../..")))\
-                    .ifPresent(lambda el: webDriver.execute_script("arguments[0].remove()", el))
-        
-        allErrornousGids = errornousGids
-        
-        for labelId in allErrornousLabelIds:
-            if labelId not in errornousLabelIds:
-                Optional.ofNullable(exceptionHandler(lambda: find_element_by_xpath(webDriver, "//*[@id = '" + labelId + "']/..")))\
-                    .ifPresent(lambda el: webDriver.execute_script("arguments[0].remove()", el))
-        allErrornousLabelIds = errornousLabelIds
+        currentBatch = int(crawlCount / batchSize)
+        if currentBatch > batchIndex:
+            if batchIndex >= 0:
+                with open(postEntriesPath, 'a') as f:
+                    csvWriter = csv.writer(f)
+                    csvWriter.writerows(batch[:batchSize])
+                    batch = batch[batchSize:]
+            batchIndex = currentBatch
+                    
         
         if cutOff is True:
-           break
-       
-    return createPostsWithUrls(postUrls)
+            break
+        else:
+            nextPageUrl = get_attribute(find_element_by_xpath(webDriver, "//*[@id = 'structured_composer_async_container']/*[2]//a"), "href")
+            webDriver.get(nextPageUrl)
+            with open(cursorUrlPath, 'w') as cursorF:
+                cursorF.write(nextPageUrl)
+ 
+    with open(postEntriesPath, 'a') as f:
+        csvWriter = csv.writer(f)
+        csvWriter.writerows(batch)
+        batch.clear()
+    return createPostsWithUrls(postEntriesPath)
 
 def getPostTimestamp(postElement: WebElement, timeout: int = 10) -> datetime | None:
     webDriver = driver.getWebDriver()
@@ -407,9 +381,7 @@ def lenN(xs: list | None) -> int:
     return len(xs)
 
 def getPostUrl(postElement: WebElement) -> str:
-    return Optional.ofNullable(get_attribute(postElement, "aria-describedby"))\
-        .map(lambda x: x.split(" "))\
-        .map(lambda x: find_element_by_xpath(postElement, ".//*[@id = '" + x[0] + "']//a"))\
+    return Optional.ofNullable(find_element_by_xpath(postElement, ".//*[@data-ft = '{\"tn\":\"*W\"}']/*[2]/a[3]"))\
         .map(lambda x: get_attribute(x, "href"))\
         .orError()
         
@@ -506,7 +478,8 @@ def outputComments(comments: list[Comment] | None, path: str, group: str, id: st
     
 # NOTE: For testing-purposes only
 def main():
-    getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000))
+    getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000))
+    # createPostsWithUrls("postEntries.txt")
     # outputPosts(getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000)), "crawled_data", "pages/etribune", "posts")
 
 def limitNumberOfPostsCrawl(upperLimit: int, upperTimeDelta: timedelta=timedelta(days=30)) -> typing.Callable[[int, Union[datetime, None]], bool]:
