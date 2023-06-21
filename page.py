@@ -106,7 +106,7 @@ class Optional(Generic[T]):
         return Optional(self.val)
         
 class Post: 
-    def __init__(self, postId: str, pageId: str | None, groupId: str | None, content: str, images: list[Image] | None, comments: list[Comment] | None, timestamp: datetime, userId: str, url: str):
+    def __init__(self, postId: str, pageId: str | None, groupId: str | None, content: str | None, images: list[Image] | None, comments: list[Comment] | None, timestamp: datetime, userId: str, url: str):
         self.postId = postId
         self.pageId = pageId
         self.groupId = groupId
@@ -118,7 +118,7 @@ class Post:
         self.url = url
 
 class Comment:
-    def __init__(self, commentId: str, content: str, images: list[str], replies: list[Comment] | None, replyTo: str | None, timestamp: datetime, userId: str, url: str, postId: str | None):
+    def __init__(self, commentId: str, content: str, images: list[str], replies: list[Comment] | None, replyTo: str | None, timestamp: datetime | None, userId: str, url: str, postId: str | None):
         self.commentId = commentId
         self.content = content
         self.images = images
@@ -136,68 +136,48 @@ class Image:
         self.url = url
         self.sourceUrl = sourceUrl
 
-def getComment(commentElement: WebElement) -> Comment | None:
-    commentUrl = Optional.ofNullable(find_element_by_xpath(commentElement, ".//div[contains(@data-sigil, 'feed_story_ring')]//a"))\
-        .map(lambda x: get_attribute(x, "href"))\
-        .orError()
-    commentUser = Optional.ofNullable(get_path_by_index(commentUrl, 1)).orError()
-    commentBodyElement = Optional.ofNullable(find_element_by_xpath(commentElement, ".//div[contains(@data-sigil, 'comment-body')]")).orError()
-    commentId = Optional.ofNullable(get_attribute(commentBodyElement, "data-commentid")).orError()
+def getComment(postId: str, replyTo: str | None, commentElement: WebElement) -> Comment:
+    commentUrl = get_attribute(find_element_by_xpath(commentElement, ".//a[contains(@href, '/comment/replies')]"), 'href')
+    commentUser = get_path_by_index(get_attribute(find_element_by_xpath(commentElement, ".//h3//a"), "href"), 1)
+    assert(commentUser is not None)
+    assert(commentUrl is not None)
+    commentId = get_attribute(commentElement, "id")
+    commentContent = find_element_by_xpath(commentElement, ".//h3/../*[2]").text
     
-    def setReplyTo(comments: list[Comment], commentId: str):
-        for comment in comments:
-            comment.replyTo = commentId
-    
-    commentContent = commentBodyElement.text
-    
-    commentTimestamp = Optional.ofNullable(find_element_by_xpath(commentElement, ".//div[contains(@data-sigil, 'ufi-inline-comment-actions')]//abbr"))\
-        .map(lambda x: x.text)\
-        .map(parseTimestamp)\
-        .orError()
+    return Comment(commentId, commentContent, [], [], replyTo, None, commentUser, commentUrl, postId)
 
-    # Expand more replies
-    Optional.ofNullable(find_element_by_xpath(commentElement, ".//div[contains(@data-sigil, 'replies-see-more')]//a"))\
-        .peek(lambda x: x.click())
-            
-    replies = Optional.ofNullable(find_elements_by_xpath(commentElement, ".//div[contains(@data-sigil, 'comment inline-reply')]"))\
-        .map(lambda els: getComments(els))\
-        .peek(lambda comments: setReplyTo(comments, commentId))\
-        .get()
+# def getComments(commentElements: list[WebElement]) -> list[Comment] | None:
+#     comments: list[Comment] = []
+#     for commentElement in commentElements:
+#         comment = getComment(commentElement) 
+#         if comment is not None:
+#             comments.append(comment)
+#         else:
+#             return None
+#     return comments
     
-    return Comment(commentId, commentContent, [], replies, None, commentTimestamp, commentUser, commentUrl, None)
-
-def getComments(commentElements: list[WebElement]) -> list[Comment] | None:
-    comments: list[Comment] = []
-    for commentElement in commentElements:
-        comment = getComment(commentElement) 
-        if comment is not None:
-            comments.append(comment)
-        else:
-            return None
-    return comments
+# def getCommentsOfUrl(url: str) -> list[Comment] | None:
+#     webDriver = driver.getWebDriver()
+#     webDriver.get(url)
     
-def getCommentsOfUrl(url: str) -> list[Comment] | None:
-    webDriver = driver.getWebDriver()
-    webDriver.get(url)
-    
-    commentCount = 0
-    while True:
-        commentElements = Optional.ofNullable(find_elements_by_xpath(webDriver, "//div[@data-sigil='comment']")).orElse([])
-        currentCommentCount = len(commentElements)
-        if currentCommentCount > commentCount:
-            commentCount = currentCommentCount
-        else:
-            # No more change after clicking load more comment
-            break
+#     commentCount = 0
+#     while True:
+#         commentElements = Optional.ofNullable(find_elements_by_xpath(webDriver, "//div[@data-sigil='comment']")).orElse([])
+#         currentCommentCount = len(commentElements)
+#         if currentCommentCount > commentCount:
+#             commentCount = currentCommentCount
+#         else:
+#             # No more change after clicking load more comment
+#             break
 
-        # Try clicking load more comment
-        Optional.ofNullable(find_element_by_xpath(webDriver, "//div[contains(@class, 'async_elem')]//a")).ifPresent(lambda x: x.click())
-        # Wait a little for ajax to finish loading the comments
-        WebDriverWait(webDriver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "div")))
+#         # Try clicking load more comment
+#         Optional.ofNullable(find_element_by_xpath(webDriver, "//div[contains(@class, 'async_elem')]//a")).ifPresent(lambda x: x.click())
+#         # Wait a little for ajax to finish loading the comments
+#         WebDriverWait(webDriver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "div")))
 
-    if commentCount > 0:
-        return getComments(commentElements)
-    return []
+#     if commentCount > 0:
+#         return getComments(commentElements)
+#     return []
 
 def getImage(imageElement: WebElement) -> Image | None:
     imageUrl = Optional.ofNullable(find_element_by_xpath(imageElement, ".//a"))\
@@ -263,12 +243,28 @@ def createPostsWithUrls(postEntriesPath: str) -> list[Post] | None:
         csvReader = csv.reader(f)
         webDriver = driver.getWebDriver()
         for row in csvReader:
-            postUrl = row[0]
-            cursorUrl = row[1]
-            dateTime = datetime.strptime(row[2], '%Y-%m-%d %H:%M:%S')
+            postId = row[0]
+            pageId = row[1]
+            postTimestamp = datetime.strptime(row[2], '%Y-%m-%d %H:%M:%S')
+            userId = row[3]
+            postUrl = row[4]
+            post = Post(postId, pageId, None, None, None, None, postTimestamp, userId, postUrl)
             webDriver.get(postUrl)
-            postId = "" # TODO:
-            # postContent = ""
+            
+            postElement = find_element_by_xpath(webDriver, "//*[@role = 'main']")
+            post.content = find_element_by_xpath(postElement, ".//*[@data-ft = '{\"tn\":\"*s\"}']/*[1]").text
+            # post.images = [get_attribute(el, "src") for el in find_elements_by_xpath(postElement, ".//*[@data-ft = '{\"tn\":\"H\"}']//img")]
+            post.comments = []
+            
+            comments = [getComment(postId, None, el) for el in find_elements_by_xpath(postElement, ".//*[@id = 'm_story_permalink_view']/*[2]/*[1]/*[5 and not(@id)]/*[not(contains(@id, 'see_next'))]")]
+            while len(comments) > 0:
+                # merge comments list
+                post.comments = post.comments + comments
+                
+                # Load more comments
+                nextCommentUrl = get_attribute(find_element_by_xpath(postElement, ".//*[@id = 'm_story_permalink_view']/*[2]/*[1]/*[5 and not(@id)]/*[contains(@id, 'see_next')]//a"), "href")
+                webDriver.get(nextCommentUrl)
+            
             # post = Post(postId, pageId, None, postContent)
             # images = Optional.ofNullable(getImagesOfUrl(postUrl)).orElse([])
             # postUrl.images = images
@@ -282,7 +278,7 @@ def createPostsWithUrls(postEntriesPath: str) -> list[Post] | None:
 
 def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetime, None]], bool], batchSize: int = 500, cursorUrlPath: str = "postCursor.txt", postEntriesPath: str = "postEntries.txt") -> list[Post] | None:
     webDriver = driver.getWebDriver()
-    defaultUrl = constants.FB_URL + "/" + pageId + "?v=timeline"
+    defaultUrl = constants.BASIC_FB_URL + "/" + pageId + "?v=timeline"
     try:
         with open(cursorUrlPath, 'r') as f:
             cursorUrl = f.readline()
@@ -293,7 +289,7 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetim
     except:        
         webDriver.get(defaultUrl)
 
-    batch: list[Tuple[str, str, datetime]] = []
+    batch: list[Post] = []
     batchIndex = -1
     crawlCount = 0
     currentBatch = -1
@@ -306,18 +302,21 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetim
             try: 
                 dataFt = get_attribute(postElement, "data-ft")
                 metadata = json.loads(dataFt)
-                
-                postTimestamp = datetime.fromtimestamp(metadata["page_insights"][metadata["content_owner_id_new"]]["post_context"]["publish_time"])
+                pageInsight = metadata["page_insights"]
+                userId = metadata["content_owner_id_new"]
+                postMetadata = pageInsight[userId]
+                postTimestamp = datetime.fromtimestamp(postMetadata["post_context"]["publish_time"])
                 postUrl = getPostUrl(postElement)
                 cursorUrl = str(webDriver.current_url)
-            
+                postId = postMetadata["targets"][0]["post_id"]
+                pageId = postMetadata["targets"][0]["page_id"]
                 cutOff = cutOffCheck(crawlCount, postTimestamp)
-                
                 # Perform some cut off check to see whether we should scroll down more
                 if cutOff:
                     break
                 else:
-                    batch.append((postUrl, cursorUrl, postTimestamp))
+                    post = Post(postId, pageId, None, None, None, None, postTimestamp, userId, postUrl)
+                    batch.append(post)
                     crawlCount += 1
                     logging.info("collect " + str(crawlCount) + " post entries")
             except Exception as e:
@@ -332,7 +331,7 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetim
             if batchIndex >= 0:
                 with open(postEntriesPath, 'a') as f:
                     csvWriter = csv.writer(f)
-                    csvWriter.writerows(batch[:batchSize])
+                    csvWriter.writerows([(el.postId, el.pageId, el.timestamp, el.userId, el.url, webDriver.current_url) for el in batch[:batchSize]])
                     batch = batch[batchSize:]
             batchIndex = currentBatch
                     
@@ -347,7 +346,7 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetim
  
     with open(postEntriesPath, 'a') as f:
         csvWriter = csv.writer(f)
-        csvWriter.writerows(batch)
+        csvWriter.writerows([(el.postId, el.pageId, el.timestamp, el.userId, el.url, webDriver.current_url) for el in batch[:batchSize]])
         batch.clear()
     return createPostsWithUrls(postEntriesPath)
 
@@ -398,6 +397,8 @@ def parseTimestamp(timestamp: str) -> datetime:
             continue
     
     # When post creation is less than 24 hour it will be in the format hour ago or minutes ago
+    if timestamp.endswith("trước"):
+        timestamp = timestamp[:len(timestamp)-len("trước")]
     if timestamp.endswith("giờ"):
         return datetime.now() - timedelta(hours=int(timestamp.split(" ")[0]))
     if timestamp.endswith("phút"):
@@ -478,8 +479,8 @@ def outputComments(comments: list[Comment] | None, path: str, group: str, id: st
     
 # NOTE: For testing-purposes only
 def main():
-    getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000))
-    # createPostsWithUrls("postEntries.txt")
+    # getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000))
+    createPostsWithUrls("postEntries.txt")
     # outputPosts(getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000)), "crawled_data", "pages/etribune", "posts")
 
 def limitNumberOfPostsCrawl(upperLimit: int, upperTimeDelta: timedelta=timedelta(days=30)) -> typing.Callable[[int, Union[datetime, None]], bool]:
