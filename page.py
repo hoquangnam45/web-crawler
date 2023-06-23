@@ -24,6 +24,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 import logging
 from selenium.common.exceptions import InvalidSessionIdException
 from selenium.common.exceptions import TimeoutException
+import base64
 
 
 T = TypeVar('T')  # Declare a type variable
@@ -129,6 +130,7 @@ class Comment:
         self.url = url
         self.postId = postId
         self.replies = replies
+        self.hasReply = Optional.ofNullable(replies).map(lambda x: len(x) > 0).orElse(False)
     
 class Image:
     def __init__(self, imageId: str, url: str, sourceUrl: str):
@@ -136,16 +138,41 @@ class Image:
         self.url = url
         self.sourceUrl = sourceUrl
 
-def getComment(postId: str, replyTo: str | None, commentElement: WebElement) -> Comment:
-    commentUrl = get_attribute(find_element_by_xpath(commentElement, ".//a[contains(@href, '/comment/replies')]"), 'href')
-    commentUser = get_path_by_index(get_attribute(find_element_by_xpath(commentElement, ".//h3//a"), "href"), 1)
-    assert(commentUser is not None)
-    assert(commentUrl is not None)
-    commentId = get_attribute(commentElement, "id")
-    commentContent = find_element_by_xpath(commentElement, ".//h3/../*[2]").text
+def getComment(postId: str, replyTo: str | None, commentElement: WebElement, webDriver: WebDriver) -> Comment:
+    commentUrl = get_attribute(find_element_by_xpath(commentElement, ".//a[contains(@href, 'comment_id')]"), "href")
+    commentTimestamp = Optional.ofNullable(getCommentTimestamp(commentElement)).orError()
+    queries = Optional.of(commentUrl)\
+        .map(urlparse)\
+        .map(lambda x: x.query)\
+        .map(parse_qs)
+    commentUser = queries.map(lambda xs: xs.get("id", None)).map(lambda xs: xs[0]).orElse(Optional.ofNullable(get_path_by_index(commentUrl, 1)).orError())
     
-    return Comment(commentId, commentContent, [], [], replyTo, None, commentUser, commentUrl, postId)
+    # NOTE: it's in the format comment:id1_id2
+    commentId = queries\
+        .map(lambda xs: xs["comment_id"][0])\
+        .map(base64.b64decode)\
+        .map(lambda decoded_bytes: decoded_bytes.decode('utf-8'))\
+        .map(lambda decoded_str: decoded_str.split(":")[1])\
+        .map(lambda ids: ids.split("_")[0])\
+        .orError()
 
+    commentContentSection = find_element_by_xpath(commentElement, ".//a[contains(@href, 'comment_id')]/../following-sibling::*[1]")
+    # NOTE: Click read more
+    Optional.ofNullable(exceptionHandler(lambda: find_element_by_xpath(commentContentSection, ".//*[@role = 'button']"), 1, False)).ifPresent(lambda x: x.click())
+    commentContent = commentContentSection.text
+    
+    comment = Comment(commentId, commentContent, [], [], replyTo, None, commentUser, commentUrl, postId)
+
+    repliesSection = Optional.ofNullable(exceptionHandler(lambda: find_element_by_xpath(commentElement, "./*[2]/*[1]"), 1, False))
+    repliesSection\
+        .peek(lambda x: exceptionHandler(lambda: find_element_by_xpath(x, "./*[2]/*[2 and role = 'button']"), 1, False))\
+        .peek(lambda x: x.click())\
+        .peek(lambda x: WebDriverWait(webDriver, 10).until(lambda _: exceptionHandler(lambda: find_element_by_xpath(x, ".//ul"), 1, False) is not None))\
+    
+    comment.hasReply = repliesSection.map(lambda x: exceptionHandler(lambda: find_element_by_xpath(x, ".//ul"), 1, False) is not None).orElse(False)
+    if comment.hasReply:
+        comment.replies = [getComment(postId, commentId, el, webDriver) for el in repliesSection.map(lambda x: find_elements_by_xpath(x, "./ul/li")).orElse([])]
+    return comment
 # def getComments(commentElements: list[WebElement]) -> list[Comment] | None:
 #     comments: list[Comment] = []
 #     for commentElement in commentElements:
@@ -248,30 +275,39 @@ def createPostsWithUrls(postEntriesPath: str) -> list[Post] | None:
             postTimestamp = datetime.strptime(row[2], '%Y-%m-%d %H:%M:%S')
             userId = row[3]
             postUrl = row[4]
+
+            parsedUrl = urlparse(postUrl)
+            if parsedUrl.hostname == urlparse(constants.BASIC_FB_URL).hostname or parsedUrl.hostname == urlparse(constants.MOBILE_FB_URL).hostname:
+                # NOTE: Transform mbasic url into desktop url to circumvent rate limit issues set in place by FB 
+                webDriver.get(parsedUrl._replace(netloc = urlparse(constants.FB_URL).hostname, path = userId + "/posts/" + parse_qs(parsedUrl.query)["story_fbid"][0], query = "", fragment = "").geturl())
+            else:
+                webDriver.get(postUrl)
+        
             post = Post(postId, pageId, None, None, None, None, postTimestamp, userId, postUrl)
-            webDriver.get(postUrl)
             
-            postElement = find_element_by_xpath(webDriver, "//*[@role = 'main']")
-            post.content = find_element_by_xpath(postElement, ".//*[@data-ft = '{\"tn\":\"*s\"}']/*[1]").text
+            postElement = find_element_by_xpath(webDriver, "//*[@aria-describedby]")
+            ariaDescribedBy = get_attribute(postElement, "aria-describedby")
+            tokens = ariaDescribedBy.split(" ")
+            
+            post.content = exceptionHandler(lambda: find_element_by_xpath(postElement, ".//*[@id = '" + tokens[1] + "']").text, 1, False)
+            
             # post.images = [get_attribute(el, "src") for el in find_elements_by_xpath(postElement, ".//*[@data-ft = '{\"tn\":\"H\"}']//img")]
-            post.comments = []
+            # comments: list[Comment] = []
             
-            comments = [getComment(postId, None, el) for el in find_elements_by_xpath(postElement, ".//*[@id = 'm_story_permalink_view']/*[2]/*[1]/*[5 and not(@id)]/*[not(contains(@id, 'see_next'))]")]
-            while len(comments) > 0:
-                # merge comments list
-                post.comments = post.comments + comments
-                
-                # Load more comments
-                nextCommentUrl = get_attribute(find_element_by_xpath(postElement, ".//*[@id = 'm_story_permalink_view']/*[2]/*[1]/*[5 and not(@id)]/*[contains(@id, 'see_next')]//a"), "href")
-                webDriver.get(nextCommentUrl)
+            # NOTE: Expand all comment
+            currentHeight = webDriver.execute_script("return document.body.scrollHeight")
+            while True:
+                loadNextComment = Optional.ofNullable(exceptionHandler(lambda: find_element_by_xpath(webDriver, "//ul/following-sibling::*[1]//*[@role = 'button']"), 1, False))
+                if loadNextComment.isEmpty():
+                    break
+                if exceptionHandler(lambda: loadNextComment.peek(lambda x: x.click()).map(lambda _: True).orElse(False), 1, False) is False:
+                    break
+
+                # NOTE: Waiting until it finish ajax loading comment before starting next iteration
+                WebDriverWait(webDriver, 10).until(lambda innerWebDriver: innerWebDriver.execute_script("return document.body.scrollHeight") > currentHeight)
+                currentHeight = webDriver.execute_script("return document.body.scrollHeight")
             
-            # post = Post(postId, pageId, None, postContent)
-            # images = Optional.ofNullable(getImagesOfUrl(postUrl)).orElse([])
-            # postUrl.images = images
-            # comments = Optional.ofNullable(getCommentsOfUrl(postUrl)).orError()
-            # for comment in comments:
-            #     comment.postId = postId
-            # postUrl.comments = comments
+            post.comments = [getComment(postId, None, el, webDriver) for el in find_elements_by_xpath(postElement, ".//form[@role = 'presentation']/../../../../following-sibling::ul/li")]
 
     # return posts
     pass
@@ -296,7 +332,7 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetim
     
     while True:
         cutOff: bool = False
-        postElements = find_elements_by_xpath(webDriver, "//*[@id = 'structured_composer_async_container']//*[@role = 'article' and @data-ft]")
+        postElements = find_elements_by_xpath(webDriver, "//*[@id = 'structured_composer_async_container']//article[@data-ft]")
         
         for postElement in postElements:
             try: 
@@ -373,6 +409,28 @@ def getPostTimestamp(postElement: WebElement, timeout: int = 10) -> datetime | N
             .get()
     finally:
         ActionChains(webDriver).move_by_offset(50, 50).perform()
+
+def getCommentTimestamp(commentElement: WebElement, timeout: int = 10) -> datetime | None:
+    webDriver = driver.getWebDriver()
+    try:
+        return Optional.ofNullable(get_attribute(commentElement, "aria-describedby"))\
+            .map(lambda x: x.split(" "))\
+            .peek(lambda x: logging.info("post id: " + x[0]))\
+            .map(lambda x: find_element_by_xpath(postElement, ".//*[@id = '" + x[0] + "']"))\
+            .peek(lambda _: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", postElement))\
+            .peek(lambda _: WebDriverWait(webDriver, timeout).until(EC.visibility_of(postElement)))\
+            .peek(lambda x: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", x))\
+            .peek(lambda x: WebDriverWait(webDriver, timeout).until(EC.visibility_of_element_located((By.ID, get_attribute(x, "id")))))\
+            .peek(lambda x: ActionChains(webDriver).move_to_element(x).perform())\
+            .peek(lambda x: WebDriverWait(webDriver, timeout).until(lambda _: Optional.ofNullable(find_element_by_xpath(x, ".//*[@aria-describedby]")).isPresent()))\
+            .map(lambda x: find_element_by_xpath(x, ".//*[@aria-describedby]"))\
+            .map(lambda x: get_attribute(x, "aria-describedby"))\
+            .peek(lambda x: logging.info("aria-describedby: " + x))\
+            .peek(lambda x: WebDriverWait(webDriver, timeout).until(lambda innerWebDriver: Optional.ofNullable(find_element_by_xpath(innerWebDriver, "//*[@id = '" + x + "']")).isPresent()))\
+            .map(lambda x: find_element_by_xpath(webDriver, "//*[@id = '" + x + "']").text)\
+            .peek(lambda x: logging.info("text: " + x))\
+            .map(parseTimestamp)\
+            .get()
 
 def lenN(xs: list | None) -> int:
     if xs is None:
@@ -479,18 +537,18 @@ def outputComments(comments: list[Comment] | None, path: str, group: str, id: st
     
 # NOTE: For testing-purposes only
 def main():
-    # getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000))
+    # getPostsOfPage("etribune", limitNumberOfPostsCrawl(30))
     createPostsWithUrls("postEntries.txt")
     # outputPosts(getPostsOfPage("etribune", limitNumberOfPostsCrawl(1_000_000)), "crawled_data", "pages/etribune", "posts")
 
 def limitNumberOfPostsCrawl(upperLimit: int, upperTimeDelta: timedelta=timedelta(days=30)) -> typing.Callable[[int, Union[datetime, None]], bool]:
     def fn(count: int, postTimestamp: datetime | None) -> bool:
         now = datetime.now()
-        if count > upperLimit:
+        if count >= upperLimit:
             return True
         if postTimestamp is not None:
             duration = now - postTimestamp
-            if duration > upperTimeDelta:
+            if duration >= upperTimeDelta:
                 return True
         return False
     return fn 
