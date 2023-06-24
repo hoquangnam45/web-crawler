@@ -161,7 +161,7 @@ def getComment(postId: str, replyTo: str | None, commentElement: WebElement, web
     Optional.ofNullable(exceptionHandler(lambda: find_element_by_xpath(commentContentSection, ".//*[@role = 'button']"), 1, False)).ifPresent(lambda x: x.click())
     commentContent = commentContentSection.text
     
-    comment = Comment(commentId, commentContent, [], [], replyTo, None, commentUser, commentUrl, postId)
+    comment = Comment(commentId, commentContent, [], [], replyTo, commentTimestamp, commentUser, commentUrl, postId)
 
     repliesSection = Optional.ofNullable(exceptionHandler(lambda: find_element_by_xpath(commentElement, "./*[2]/*[1]"), 1, False))
     repliesSection\
