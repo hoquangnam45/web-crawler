@@ -169,19 +169,19 @@ def getComment(postId: str, replyTo: str | None, commentElement: WebElement, web
         comment = Comment(commentId, commentContent, [], [], replyTo, None, commentUser, commentUrl, postId)
 
         repliesSection = Optional.ofNullable(exceptionHandler(lambda: find_element_by_xpath(commentElement, "./*[2]/*[1]"), 1, False))
+        relpliesXpath = comment.replyTo is None and "./*[2]/*[1]/ul" or "./*[2]/ul"
         try:
             webDriver = driver.getWebDriver()
             repliesSection\
                 .map(lambda x: exceptionHandler(lambda: find_element_by_xpath(x, "./*[2]/*[2 and @role = 'button']"), 1, False))\
                 .peek(lambda x: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", x))\
                 .peek(lambda x: x.click())\
-                .peek(lambda x: WebDriverWait(webDriver, 10).until(lambda _: exceptionHandler(lambda: find_element_by_xpath(commentElement, "./*[2]//ul"), 1, False) is not None))
+                .peek(lambda x: WebDriverWait(webDriver, 10).until(lambda _: exceptionHandler(lambda: find_element_by_xpath(commentElement, relpliesXpath), 1, False) is not None))
         except Exception as e:
             print(e)
-        comment.hasReply = repliesSection.map(lambda x: exceptionHandler(lambda: find_element_by_xpath(commentElement, "./*[2]//ul"), 1, False) is not None).orElse(False)
+        comment.hasReply = repliesSection.map(lambda x: exceptionHandler(lambda: find_element_by_xpath(commentElement, relpliesXpath), 1, False) is not None).orElse(False)
         if comment.hasReply:
-            xpath = comment.replyTo is None and "./*[2]/*[1]/ul" or "./*[2]/ul"
-            comment.replies = [getComment(postId, commentId, el, webDriver) for el in repliesSection.map(lambda x: find_elements_by_xpath(commentElement, xpath + "/li")).orElse([])]
+            comment.replies = [getComment(postId, commentId, el, webDriver) for el in repliesSection.map(lambda x: find_elements_by_xpath(commentElement, relpliesXpath + "/li")).orElse([])]
         return comment
     except Exception as e:
         traceback.format_exc()
