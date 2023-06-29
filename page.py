@@ -8,6 +8,7 @@ import time
 import traceback
 from typing import Tuple, Union
 import typing
+from typing_extensions import deprecated
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
@@ -138,17 +139,18 @@ class Image:
         self.url = url
         self.sourceUrl = sourceUrl
 
+# TODO: Get images
+# TODO: Recheck comment expansion not working correctly
 def getComment(postId: str, replyTo: str | None, commentElement: WebElement, webDriver: WebDriver) -> Comment:
+    commentTimestamp = getCommentTimestamp(commentElement)
     commentUrl = get_attribute(find_element_by_xpath(commentElement, ".//a[contains(@href, 'comment_id')]"), "href")
-    # commentTimestamp = Optional.ofNullable(getCommentTimestamp(commentElement)).orError()
     queries = Optional.of(commentUrl)\
         .map(urlparse)\
         .map(lambda x: x.query)\
         .map(parse_qs)
     commentUser = queries.map(lambda xs: xs.get("id", None)).map(lambda xs: xs[0]).orElse(Optional.ofNullable(get_path_by_index(commentUrl, 1)).orError())
     
-    # NOTE: it's in the format comment:id1_id2
-    
+    # NOTE: it's in the format comment:id1_id2 or just plain comment_id
     commentId = exceptionHandler(lambda: queries\
         .map(lambda xs: xs["comment_id"][0])\
         .map(base64.b64decode)\
@@ -166,58 +168,47 @@ def getComment(postId: str, replyTo: str | None, commentElement: WebElement, web
             .peek(lambda x: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", x))\
             .ifPresent(lambda x: x.click())
         commentContent = commentContentSection.text
-        comment = Comment(commentId, commentContent, [], [], replyTo, None, commentUser, commentUrl, postId)
+        
+        # NOTE: Replies and images will be set later
+        comment = Comment(commentId, commentContent, [], [], replyTo, commentTimestamp, commentUser, commentUrl, postId)
 
-        repliesSection = Optional.ofNullable(exceptionHandler(lambda: find_element_by_xpath(commentElement, "./*[2]/*[1]"), 1, False))
-        relpliesXpath = comment.replyTo is None and "./*[2]/*[1]/ul" or "./*[2]/ul"
+        # NOTE: Top level comment reply section sometimes have different structure from reply section of reply
+        relpliesXpathTopLevel = "./*/*/ul"
+        relpliesXpathReply = "./*/ul"
         try:
             webDriver = driver.getWebDriver()
-            repliesSection\
-                .map(lambda x: exceptionHandler(lambda: find_element_by_xpath(x, "./*[2]/*[2 and @role = 'button']"), 1, False))\
-                .peek(lambda x: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", x))\
-                .peek(lambda x: x.click())\
-                .peek(lambda x: WebDriverWait(webDriver, 10).until(lambda _: exceptionHandler(lambda: find_element_by_xpath(commentElement, relpliesXpath), 1, False) is not None))
+            while True:
+                readMoreBtn = exceptionHandler(lambda: find_element_by_xpath(commentElement, "./*/*/*/*[@role = 'button']"), 1, False)
+                if readMoreBtn is None: # NOTE: Just weird FB structure
+                    readMoreBtn = exceptionHandler(lambda: find_element_by_xpath(commentElement, "./*/*/*[@role = 'button']"), 1, False)
+                if readMoreBtn is None:
+                    break
+                # Expand replies and wait until reply section is visible
+                Optional.ofNullable(readMoreBtn)\
+                    .peek(lambda x: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", x))\
+                    .peek(lambda x: x.click())\
+                
+                if readMoreBtn is not None:
+                    # NOTE: Optimization changing the order of wait for reply and top level comment
+                    if replyTo is not None: # Is reply
+                        WebDriverWait(webDriver, 10).until(lambda _: exceptionHandler(lambda: find_element_by_xpath(commentElement, relpliesXpathReply), 1, False) is not None)
+                    else: # Top level comment
+                        WebDriverWait(webDriver, 10).until(lambda _: exceptionHandler(lambda: find_element_by_xpath(commentElement, relpliesXpathTopLevel), 1, False) is not None)
         except Exception as e:
             print(e)
-        comment.hasReply = repliesSection.map(lambda x: exceptionHandler(lambda: find_element_by_xpath(commentElement, relpliesXpath), 1, False) is not None).orElse(False)
+        
+        if replyTo is None:
+            repliesSection = exceptionHandler(lambda: find_element_by_xpath(commentElement, relpliesXpathTopLevel), 1, False)
+        else:
+            repliesSection = exceptionHandler(lambda: find_element_by_xpath(commentElement, relpliesXpathReply), 1, False)
+            
+        comment.hasReply = repliesSection is not None
         if comment.hasReply:
-            comment.replies = [getComment(postId, commentId, el, webDriver) for el in repliesSection.map(lambda x: find_elements_by_xpath(commentElement, relpliesXpath + "/li")).orElse([])]
+            comment.replies = [getComment(postId, commentId, el, webDriver) for el in Optional.ofNullable(repliesSection).map(lambda x: find_elements_by_xpath(x, "./li")).orElse([])]
         return comment
     except Exception as e:
         traceback.format_exc()
         raise(e)
-# def getComments(commentElements: list[WebElement]) -> list[Comment] | None:
-#     comments: list[Comment] = []
-#     for commentElement in commentElements:
-#         comment = getComment(commentElement) 
-#         if comment is not None:
-#             comments.append(comment)
-#         else:
-#             return None
-#     return comments
-    
-# def getCommentsOfUrl(url: str) -> list[Comment] | None:
-#     webDriver = driver.getWebDriver()
-#     webDriver.get(url)
-    
-#     commentCount = 0
-#     while True:
-#         commentElements = Optional.ofNullable(find_elements_by_xpath(webDriver, "//div[@data-sigil='comment']")).orElse([])
-#         currentCommentCount = len(commentElements)
-#         if currentCommentCount > commentCount:
-#             commentCount = currentCommentCount
-#         else:
-#             # No more change after clicking load more comment
-#             break
-
-#         # Try clicking load more comment
-#         Optional.ofNullable(find_element_by_xpath(webDriver, "//div[contains(@class, 'async_elem')]//a")).ifPresent(lambda x: x.click())
-#         # Wait a little for ajax to finish loading the comments
-#         WebDriverWait(webDriver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "div")))
-
-#     if commentCount > 0:
-#         return getComments(commentElements)
-#     return []
 
 def getImage(imageElement: WebElement) -> Image | None:
     imageUrl = Optional.ofNullable(find_element_by_xpath(imageElement, ".//a"))\
@@ -250,7 +241,8 @@ def getImagesOfUrl(url: str) -> list[Image] | None:
             return None
         ret.append(img)
     return ret
-    
+
+@deprecated("Use createPostsWithUrls instead") 
 def createPost(postElement: WebElement) ->  Post | None:
     postStoryContainer = Optional.ofNullable(find_element_by_xpath(postElement, ".//div[contains(@class, 'story_body_container')]")).orError()
     postHeaderElement = Optional.ofNullable(find_element_by_xpath(postStoryContainer, ".//header")).orError()
@@ -277,11 +269,13 @@ def createPost(postElement: WebElement) ->  Post | None:
     postContent = Optional.ofNullable(postContentElement).map(lambda x: x.text).orElse("")
     
     return Post(postId, None, None, postContent, None, None, postTimestamp, postUser, postUrl)
-    
+
+# TODO: Get images
 def createPostsWithUrls(postEntriesPath: str) -> list[Post] | None:
     with open(postEntriesPath, "r") as f:
         csvReader = csv.reader(f)
         webDriver = driver.getWebDriver()
+        posts: list[Post] = []
         for row in csvReader:
             postId = row[0]
             pageId = row[1]
@@ -321,10 +315,10 @@ def createPostsWithUrls(postEntriesPath: str) -> list[Post] | None:
                 currentHeight = webDriver.execute_script("return document.body.scrollHeight")
             
             post.comments = [getComment(postId, None, el, webDriver) for el in find_elements_by_xpath(postElement, ".//form[@role = 'presentation']/../../../../following-sibling::ul/li")]
-            print("")
-    # return posts
-    pass
-
+            posts.append(post)
+        return posts
+    
+# NOTE: Side-effectful method, running this will save the cursor url from the seed url and output a text file contains basic post data collect from the seed url using cutOffCheck as the limiter whether to continue crawling the post or stop
 def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetime, None]], bool], batchSize: int = 500, cursorUrlPath: str = "postCursor.txt", postEntriesPath: str = "postEntries.txt") -> list[Post] | None:
     webDriver = driver.getWebDriver()
     defaultUrl = constants.BASIC_FB_URL + "/" + pageId + "?v=timeline"
@@ -383,8 +377,7 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetim
                     csvWriter.writerows([(el.postId, el.pageId, el.timestamp, el.userId, el.url, webDriver.current_url) for el in batch[:batchSize]])
                     batch = batch[batchSize:]
             batchIndex = currentBatch
-                    
-        
+    
         if cutOff is True:
             break
         else:
@@ -399,6 +392,25 @@ def getPostsOfPage(pageId: str, cutOffCheck: typing.Callable[[int, Union[datetim
         batch.clear()
     return createPostsWithUrls(postEntriesPath)
 
+def getCommentTimestamp(commentElement: WebElement, timeout: int = 10) -> datetime:
+    webDriver = driver.getWebDriver()
+    return Optional.of(find_element_by_xpath(commentElement, ".//ul[@aria-hidden = 'false']//a[contains(@href, 'comment_id')]"))\
+            .peek(lambda _: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", commentElement))\
+            .peek(lambda _: WebDriverWait(webDriver, timeout).until(EC.visibility_of(commentElement)))\
+            .peek(lambda x: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", x))\
+            .peek(lambda x: WebDriverWait(webDriver, timeout).until(EC.visibility_of(x)))\
+            .peek(lambda x: ActionChains(webDriver).move_to_element(x).perform())\
+            .peek(lambda x: WebDriverWait(webDriver, timeout).until(lambda _: Optional.ofNullable(find_element_by_xpath(x, ".//*[@aria-describedby]")).isPresent()))\
+            .map(lambda x: find_element_by_xpath(x, ".//*[@aria-describedby]"))\
+            .map(lambda x: get_attribute(x, "aria-describedby"))\
+            .peek(lambda x: logging.info("aria-describedby: " + x))\
+            .peek(lambda x: WebDriverWait(webDriver, timeout).until(lambda innerWebDriver: Optional.ofNullable(find_element_by_xpath(innerWebDriver, "//*[@id = '" + x + "']")).isPresent()))\
+            .map(lambda x: find_element_by_xpath(webDriver, "//*[@id = '" + x + "']").text)\
+            .peek(lambda x: logging.info("text: " + x))\
+            .map(parseTimestamp)\
+            .orError()
+
+@deprecated("Not needed anymore with mbasic version of FB URL")
 def getPostTimestamp(postElement: WebElement, timeout: int = 10) -> datetime | None:
     webDriver = driver.getWebDriver()
     try:
@@ -422,28 +434,6 @@ def getPostTimestamp(postElement: WebElement, timeout: int = 10) -> datetime | N
             .get()
     finally:
         ActionChains(webDriver).move_by_offset(50, 50).perform()
-
-# def getCommentTimestamp(commentElement: WebElement, timeout: int = 10) -> datetime | None:
-#     webDriver = driver.getWebDriver()
-#     try:
-#         return Optional.ofNullable(get_attribute(commentElement, "aria-describedby"))\
-#             .map(lambda x: x.split(" "))\
-#             .peek(lambda x: logging.info("post id: " + x[0]))\
-#             .map(lambda x: find_element_by_xpath(postElement, ".//*[@id = '" + x[0] + "']"))\
-#             .peek(lambda _: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", postElement))\
-#             .peek(lambda _: WebDriverWait(webDriver, timeout).until(EC.visibility_of(postElement)))\
-#             .peek(lambda x: webDriver.execute_script("arguments[0].scrollIntoView({behavior: 'auto',block: 'center',inline: 'center'});", x))\
-#             .peek(lambda x: WebDriverWait(webDriver, timeout).until(EC.visibility_of_element_located((By.ID, get_attribute(x, "id")))))\
-#             .peek(lambda x: ActionChains(webDriver).move_to_element(x).perform())\
-#             .peek(lambda x: WebDriverWait(webDriver, timeout).until(lambda _: Optional.ofNullable(find_element_by_xpath(x, ".//*[@aria-describedby]")).isPresent()))\
-#             .map(lambda x: find_element_by_xpath(x, ".//*[@aria-describedby]"))\
-#             .map(lambda x: get_attribute(x, "aria-describedby"))\
-#             .peek(lambda x: logging.info("aria-describedby: " + x))\
-#             .peek(lambda x: WebDriverWait(webDriver, timeout).until(lambda innerWebDriver: Optional.ofNullable(find_element_by_xpath(innerWebDriver, "//*[@id = '" + x + "']")).isPresent()))\
-#             .map(lambda x: find_element_by_xpath(webDriver, "//*[@id = '" + x + "']").text)\
-#             .peek(lambda x: logging.info("text: " + x))\
-#             .map(parseTimestamp)\
-#             .get()
 
 def lenN(xs: list | None) -> int:
     if xs is None:
@@ -487,14 +477,16 @@ def exceptionHandler(f: typing.Callable[[], T], maxRetries: int = 10, shouldLog:
                 logging.info("Retrying: " + str(i))
             return f()
         except InvalidSessionIdException as innerE:
+            # TODO: Refresh session id
+            # TODO: Find a way to handle exception gracefully and allow resume from exception
             if shouldLog:
-                logging.error(innerE) # TODO: Refresh session id
+                logging.error(innerE) 
                 logging.error(traceback.format_exc())
             e = innerE
             pass
         except Exception as innerE:
             if shouldLog:
-                logging.error(innerE) # TODO: Refresh session id
+                logging.error(innerE)
                 logging.error(traceback.format_exc())
             e = innerE
             pass
@@ -547,10 +539,8 @@ def outputComments(comments: list[Comment] | None, path: str, group: str, id: st
         # for comment in comments:
         #     writer.writerow([post.postId, post.userId, post.pageId, post.groupId, post.content, post.images, post.timestamp])
         #     outputComments(post.comments, path, id, "comments")
-    
-# NOTE: update time stamp
-# NOTE: Check timeout exception 
-# NOTE: Get images
+
+
 # NOTE: For testing-purposes only
 def main():
     # getPostsOfPage("etribune", limitNumberOfPostsCrawl(30))
